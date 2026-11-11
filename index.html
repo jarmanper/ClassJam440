@@ -2,180 +2,172 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Ice Cube Run</title>
+<title>Ice Cube Run 3D</title>
 <style>
-  html,body{margin:0;height:100%;background:#0b1020;display:flex;align-items:center;
-            justify-content:center;font-family:system-ui,Segoe UI,Arial,sans-serif;}
-  canvas{display:block;border-radius:10px;box-shadow:0 0 40px #000a;}
+  html,body{margin:0;height:100%;background:#0b1020;overflow:hidden;
+            font-family:system-ui,Segoe UI,Arial,sans-serif;color:#e9f3ff;}
+  canvas{display:block;}
+  #hud{position:fixed;left:0;top:0;right:0;height:52px;background:rgba(8,12,28,0.85);
+       display:flex;align-items:center;gap:22px;padding:0 18px;box-sizing:border-box;
+       font-weight:700;font-size:14px;z-index:5;}
+  #bar{width:280px;height:18px;border-radius:6px;background:#17223c;border:1.5px solid #39507e;
+       position:relative;overflow:hidden;}
+  #fill{position:absolute;left:0;top:0;bottom:0;width:100%;background:#4aa8ff;}
+  #num{position:absolute;right:7px;top:1px;font-size:11px;}
+  #hud .dim{color:#7a8cb0;font-weight:400;font-size:12px;margin-left:auto;}
+  #tip{position:fixed;left:0;right:0;bottom:0;padding:8px 10px;text-align:center;
+       background:rgba(6,10,22,0.85);color:#b9ccf0;font-size:13px;line-height:1.5;z-index:5;}
+  #screen{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+          text-align:center;background:rgba(5,9,20,0.88);z-index:10;}
+  #screen h1{font-size:56px;margin:0 0 10px;color:#9fe6ff;}
+  #screen p{font-size:18px;margin:8px 0;color:#c8d8f5;}
+  #screen .go{color:#ffe27a;font-weight:700;font-size:22px;margin-top:26px;}
+  #screen .red{color:#ff8080;}
+  #screen .title{font-size:72px;letter-spacing:2px;margin:0;
+    background:linear-gradient(180deg,#ffffff 0%,#9fe6ff 55%,#3f9fe0 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    text-shadow:0 0 30px rgba(120,200,255,0.35);}
+  #screen .sub{font-size:22px;color:#fff;margin:6px 0 24px;}
+  .menu{display:flex;flex-direction:column;gap:10px;align-items:center;margin-top:18px;}
+  .btn{min-width:300px;padding:12px 22px;border-radius:10px;border:2px solid #39507e;background:#17223c;
+       color:#e9f3ff;font-size:18px;font-weight:700;cursor:pointer;font-family:inherit;}
+  .btn:hover,.btn.sel{border-color:#ffe27a;color:#ffe27a;background:#1d2b4d;}
+  .btn .val{float:right;color:#9fe6ff;}
+  .legend{display:inline-grid;grid-template-columns:34px auto;gap:10px 14px;text-align:left;
+          font-size:17px;align-items:center;margin-top:10px;}
+  .sw{width:30px;height:22px;border-radius:5px;display:inline-block;}
+  .hint{color:#7a8cb0;font-size:13px;margin-top:22px;}
+  #callout{position:fixed;left:50%;top:70px;transform:translateX(-50%);padding:10px 22px;border-radius:12px;
+           font-size:24px;font-weight:800;pointer-events:none;z-index:6;opacity:0;transition:opacity .15s;
+           background:rgba(8,12,28,0.8);border:2px solid currentColor;text-shadow:0 2px 6px #000;}
+  #hud.melting #bar{box-shadow:0 0 14px #ff5a3a;border-color:#ff5a3a;}
 </style>
 </head>
 <body>
-<canvas id="game" width="960" height="600"></canvas>
+<div id="hud">
+  <span>SIZE</span>
+  <div id="bar"><div id="fill"></div><span id="num">100</span></div>
+  <span id="lvl">LEVEL 1 / 3</span>
+  <span id="time">TIME 0:00.0</span>
+  <span id="deaths">MELTS 0</span>
+  <span class="dim">WASD / Arrows move &nbsp;-&nbsp; R restarts level</span>
+</div>
+<div id="tip"></div>
+<div id="callout"></div>
+<div id="screen"></div>
+
+<!-- three.js is the only library, linked by URL as the jam rules allow -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script>
 "use strict";
 /* =========================================================================
-   ICE CUBE RUN  -  theme: SHRINKING
-   One file, vanilla JS + Canvas. All art drawn in code.
+   ICE CUBE RUN 3D  -  theme: SHRINKING
+   The whole game simulates in the same 2D "pixel" space as the original
+   (960x600, top-down) and only the RENDERING is 3D: 20 px = 1 world unit.
+   That keeps the level geometry that was machine-verified beatable.
 
    SECTIONS
-     1. Constants & math helpers
-     2. Level data (3 hand-made levels)
-     3. Input
-     4. Game state
-     5. Collision & movement (AABB + corner correction)
-     6. Update loop
-     7. Particles
-     8. Rendering (world, cube, HUD, screens)
-     9. Main loop
+     1. Balance constants & helpers
+     2. Level data (walls, zones, snowflakes, hazards)
+     3. Collision & movement (AABB + corner correction)
+     --- everything above is pure logic; verify.js re-uses it ---
+     4. Input
+     5. Game state
+     6. Hazards: dog, seagull, hot tiles
+     7. Update loop
+     8. three.js scene, meshes, particles, camera
+     9. HUD / screens
+    10. Main loop
    ========================================================================= */
 
-/* ---------------------------------------------------------------- 1. CONST */
-const canvas = document.getElementById("game");
-const ctx    = canvas.getContext("2d");
-const W = 960, H = 600;
-const PLAY_TOP = 56;          // HUD band height; the arena starts below it
+/* --------------------------------------------------------- 0. SETTINGS */
+const DIFFS = [{name:"Chill", mult:0.7}, {name:"Normal", mult:1.0}, {name:"Spicy", mult:1.4}];
+let settings = {diff:1, shake:true, camFar:false};
+try { Object.assign(settings, JSON.parse(localStorage.getItem("icecube3d") || "{}")); } catch(e){}
+function saveSettings(){ try { localStorage.setItem("icecube3d", JSON.stringify(settings)); } catch(e){} }
 
-const MAX_SIZE = 100;         // size IS health
-const MIN_PX   = 12;          // drawn width when nearly melted
-const MAX_PX   = 48;          // drawn width at full size
+/* ---------------------------------------------------------- 1. BALANCE */
+const W = 960, H = 600;         // logical arena in px
+const PLAY_TOP = 56;
+const U = 20;                   // px per world unit
 
-const DRAIN_BASE = 1;         // size lost per second in the open
-const DRAIN_SUN  = 8;         // size lost per second in sunlight
-const FLAKE_GAIN = 15;        // size gained per snowflake
+const MAX_SIZE = 100, MIN_PX = 12, MAX_PX = 48;
+const DRAIN_BASE = 1.5;         // size per second just for existing
+const DRAIN_SUN  = 12;          // in sunlight
+const DRAIN_HOT  = 20;          // on a hot tile
+const FLAKE_GAIN = 12;
+const LICK_COST  = 8;           // a dog lick
+const GULL_COST  = 10;          // a seagull hit
 
-// size -> drawn pixel width
+const DOG_SPEED_WANDER = 90, DOG_SPEED_CHASE = 165, DOG_SIGHT = 190, DOG_HALF = 13;
+const GULL_WARN = 1.2, GULL_DIVE = 0.45, GULL_HIT_R = 34;
+
 function pxFor(size){ return MIN_PX + (size / MAX_SIZE) * (MAX_PX - MIN_PX); }
-// size -> movement speed (smaller cube = faster cube)
 function speedFor(size){ return 300 - size * 1.6; }
-
 function clamp(v,a,b){ return v < a ? a : v > b ? b : v; }
-function aabb(ax,ay,aw,ah, bx,by,bw,bh){
-  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
-}
-function pointIn(px,py,r){
-  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-}
-function fmtTime(s){
-  const m = Math.floor(s/60), r = s - m*60;
-  return m + ":" + (r < 10 ? "0" : "") + r.toFixed(1);
-}
+function aabb(ax,ay,aw,ah, bx,by,bw,bh){ return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by; }
+function pointIn(px,py,r){ return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
+function fmtTime(s){ const m = Math.floor(s/60), r = s - m*60; return m + ":" + (r < 10 ? "0" : "") + r.toFixed(1); }
 
-/* ---------------------------------------------------------- 2. LEVEL DATA */
-// Arena interior is x 20..940, y 76..580 once the border walls are in.
+/* ---------------------------------------------------------- 2. LEVELS */
 function border(){
   return [
-    {x:0,        y:PLAY_TOP, w:W,  h:20},            // top
-    {x:0,        y:H-20,     w:W,  h:20},            // bottom
-    {x:0,        y:PLAY_TOP, w:20, h:H-PLAY_TOP},    // left
-    {x:W-20,     y:PLAY_TOP, w:20, h:H-PLAY_TOP}     // right
+    {x:0,    y:PLAY_TOP, w:W,  h:20},
+    {x:0,    y:H-20,     w:W,  h:20},
+    {x:0,    y:PLAY_TOP, w:20, h:H-PLAY_TOP},
+    {x:W-20, y:PLAY_TOP, w:20, h:H-PLAY_TOP}
   ];
 }
-
 const LEVELS = [
-  /* --- LEVEL 1: tutorial. One S-shaped path, one sun, one shade, 2 flakes.
-         No gaps: the only job is to learn what melts you. -------------- */
-  {
-    tips: ["Yellow SUN melts you fast. Dark SHADE stops the melting.",
-           "Grab snowflakes to grow back. Reach the freezer!"],
+  { // LEVEL 1 - tutorial, no hazards
+    tips: ["Yellow SUN melts you fast. Dark SHADE stops the melting. Snowflakes grow you back.",
+           "Reach the glowing freezer."],
     start: {x:70, y:140},
     freezer: {x:845, y:478, w:72, h:76},
-    walls: border().concat([
-      {x:20,  y:204, w:820, h:60},   // divider 1 - opening on the RIGHT
-      {x:140, y:392, w:820, h:60}    // divider 2 - opening on the LEFT
-    ]),
+    walls: border().concat([ {x:20, y:204, w:820, h:60}, {x:140, y:392, w:820, h:60} ]),
     sun:   [{x:420, y:76,  w:160, h:128}],
     shade: [{x:560, y:264, w:160, h:128}],
-    beams: [],
+    hot: [], beams: [], dogs: [], gull: false,
     flakes:[{x:300, y:328}, {x:420, y:516}]
   },
-
-  /* --- LEVEL 2: the gap. Freezer is behind a wall with a 26px slot, so the
-         cube has to melt on purpose, squeeze through, then refill. ----- */
-  {
-    tips: ["Too big? Melt a little.",
-           "Shrink in the sun until you fit the slot, then refill on the far side."],
+  { // LEVEL 2 - the slot, a dog, hot tiles
+    tips: ["Too big? Melt a little. Shrink in the sun until you fit the slot.",
+           "RED tiles burn. The DOG licks - it won't follow you into shade, and small cubes outrun it."],
     start: {x:70, y:150},
     freezer: {x:845, y:250, w:72, h:76},
     walls: border().concat([
-      {x:600, y:76,  w:25, h:224},   // gap wall, upper half
-      {x:600, y:326, w:25, h:254},   // gap wall, lower half  -> gap y300..326 (26px)
-      {x:180, y:76,  w:24, h:340},   // baffle 1 - go under
-      {x:340, y:260, w:24, h:320},   // baffle 2 - go over
-      {x:470, y:76,  w:24, h:300}    // baffle 3 - go under
+      {x:600, y:76,  w:25, h:224}, {x:600, y:326, w:25, h:254},       // slot y300..326
+      {x:180, y:76,  w:24, h:340}, {x:340, y:260, w:24, h:320}, {x:470, y:76, w:24, h:300}
     ]),
-    sun:   [{x:500, y:76,  w:95, h:504}],            // the melting lane
-    shade: [{x:400, y:400, w:66, h:170},             // top up before the sun
-            {x:630, y:280, w:70, h:70}],             // safe landing past the gap
+    sun:   [{x:500, y:76,  w:95, h:504}],
+    shade: [{x:400, y:400, w:66, h:170}, {x:630, y:280, w:70, h:70}],
+    hot:   [{x:230, y:416, w:60, h:90}, {x:240, y:120, w:80, h:60}],
     beams: [],
-    flakes:[{x:260, y:500}, {x:420, y:200},
-            {x:700, y:420}, {x:780, y:230}, {x:870, y:500}]
+    dogs:  [{x:880, y:150, path:[[700,150],[880,150],[880,520],[700,520]]}],
+    gull: false,
+    flakes:[{x:260, y:500}, {x:420, y:200}, {x:700, y:420}, {x:780, y:230}, {x:870, y:500}]
   },
-
-  /* --- LEVEL 3: finale. Sun corridor, two gaps of different widths
-         (34px then 24px) and two sun beams sweeping out of phase. ------ */
-  {
-    tips: ["Two slots, two different sizes. The beams sweep - there is a safe lane between them.",
-           "Melt to fit, then eat snowflakes to survive the run home."],
+  { // LEVEL 3 - finale: two slots, beams, two dogs, a seagull
+    tips: ["Two slots, two sizes. Beams sweep - there is a safe lane between them.",
+           "A SEAGULL marks you with a shadow, then dives. Step off it!"],
     start: {x:70, y:500},
     freezer: {x:850, y:90, w:72, h:76},
     walls: border().concat([
-      {x:360, y:76,  w:24, h:104},   // wall A upper
-      {x:360, y:214, w:24, h:366},   // wall A lower -> gap y180..214 (34px)
-      {x:680, y:76,  w:24, h:342},   // wall B upper
-      {x:680, y:442, w:24, h:138}    // wall B lower -> gap y418..442 (24px)
+      {x:360, y:76,  w:24, h:104}, {x:360, y:214, w:24, h:366},       // slot y180..214 (34px)
+      {x:680, y:76,  w:24, h:342}, {x:680, y:442, w:24, h:138}        // slot y418..442 (24px)
     ]),
-    sun:   [{x:250, y:76,  w:100, h:504},            // shrink for gap 1
-            {x:596, y:430, w:80,  h:150}],           // shrink for gap 2
-    shade: [{x:50,  y:300, w:90,  h:110},
-            {x:610, y:240, w:64,  h:70},
-            {x:712, y:400, w:80,  h:80}],            // safe landing past gap 2
+    sun:   [{x:250, y:76,  w:100, h:504}, {x:596, y:430, w:80, h:150}],
+    shade: [{x:50, y:300, w:90, h:110}, {x:610, y:240, w:64, h:70}, {x:712, y:400, w:80, h:80}],
+    hot:   [{x:160, y:300, w:60, h:120}, {x:800, y:300, w:60, h:90}],
     beams: [ {x0:400, x1:590, y:76,  w:56, h:230, speed:0.9, phase:0},
              {x0:400, x1:590, y:346, w:56, h:234, speed:0.9, phase:Math.PI} ],
-    flakes:[{x:150, y:480}, {x:120, y:180},
-            {x:420, y:120}, {x:470, y:540}, {x:620, y:180},
+    dogs:  [{x:640, y:110, path:[[420,110],[650,110],[650,330],[420,330]]},
+            {x:900, y:540, path:[[740,560],[900,560],[900,230],[740,230]]}],
+    gull: true,
+    flakes:[{x:150, y:480}, {x:120, y:180}, {x:420, y:120}, {x:470, y:540}, {x:620, y:180},
             {x:780, y:330}, {x:800, y:170}, {x:860, y:480}]
   }
 ];
-
-/* -------------------------------------------------------------- 3. INPUT */
-const keys = Object.create(null);
-let confirmPressed = false, restartPressed = false;
-const BLOCK = {ArrowUp:1,ArrowDown:1,ArrowLeft:1,ArrowRight:1,Space:1};
-
-addEventListener("keydown", e => {
-  if (BLOCK[e.code]) e.preventDefault();
-  if (!keys[e.code]) {                       // edge-triggered actions
-    if (e.code === "Enter" || e.code === "Space") confirmPressed = true;
-    if (e.code === "KeyR") restartPressed = true;
-  }
-  keys[e.code] = true;
-});
-addEventListener("keyup", e => { keys[e.code] = false; });
-
-function axisInput(){
-  let dx = 0, dy = 0;
-  if (keys.KeyA || keys.ArrowLeft)  dx -= 1;
-  if (keys.KeyD || keys.ArrowRight) dx += 1;
-  if (keys.KeyW || keys.ArrowUp)    dy -= 1;
-  if (keys.KeyS || keys.ArrowDown)  dy += 1;
-  if (dx && dy) { const k = Math.SQRT1_2; dx *= k; dy *= k; }   // 8-directional
-  return {dx, dy};
-}
-
-/* --------------------------------------------------------- 4. GAME STATE */
-const STATE = {TITLE:"title", PLAY:"play", DEAD:"dead", LEVELEND:"levelend", WIN:"win"};
-let state = STATE.TITLE;
-let levelIndex = 0;
-let level = null;        // active level data
-let flakes = [];         // runtime copy with "taken" flags
-let drips = [];          // water particles
-let player = null;
-let levelTime = 0, bankedTime = 0, totalTime = 0;
-let beamT = 0;           // clock for the sweeping beams
-let worldTime = 0;       // clock for idle animation
-
-// Find the narrow slots (two walls in the same column with a short gap between
-// them) so we can highlight them - they are the whole point of the game.
 function findSlots(lv){
   const out = [];
   for (const a of lv.walls) for (const b of lv.walls){
@@ -185,24 +177,9 @@ function findSlots(lv){
   }
   return out;
 }
+LEVELS.forEach(lv => { lv.slots = findSlots(lv); });
 
-LEVELS.forEach(lv => { lv.slots = findSlots(lv); });   // precompute once
-
-function loadLevel(i){
-  levelIndex = i;
-  level  = LEVELS[i];
-  flakes = level.flakes.map(f => ({x:f.x, y:f.y, taken:false}));
-  drips  = [];
-  player = {x: level.start.x, y: level.start.y, size: MAX_SIZE,
-            half: pxFor(MAX_SIZE)/2, inSun:false, inShade:false, moving:false,
-            dripTimer:0};
-  levelTime = 0;
-  beamT = 0;
-  state = STATE.PLAY;
-}
-function startGame(){ bankedTime = 0; totalTime = 0; loadLevel(0); }
-
-/* ------------------------------------------- 5. COLLISION & MOVEMENT */
+/* ------------------------------------------- 3. COLLISION & MOVEMENT */
 function collides(cx, cy, half, walls){
   const x = cx - half, y = cy - half, s = half * 2;
   for (let i = 0; i < walls.length; i++){
@@ -211,116 +188,237 @@ function collides(cx, cy, half, walls){
   }
   return false;
 }
-
-// Move on one axis. If blocked, try sliding up to CC px sideways so that a
-// cube small enough for a slot actually gets funneled into it.
-const CC = 12;
+const CC = 12;   // corner correction: slide sideways this far to find a slot
 function moveAxis(p, dx, dy, walls){
   const nx = p.x + dx, ny = p.y + dy;
-  if (!collides(nx, ny, p.half, walls)) { p.x = nx; p.y = ny; return; }
+  if (!collides(nx, ny, p.half, walls)) { p.x = nx; p.y = ny; return true; }
   for (let d = 1; d <= CC; d++){
     if (dx !== 0){
-      if (!collides(nx, p.y - d, p.half, walls)) { p.x = nx; p.y -= d; return; }
-      if (!collides(nx, p.y + d, p.half, walls)) { p.x = nx; p.y += d; return; }
+      if (!collides(nx, p.y - d, p.half, walls)) { p.x = nx; p.y -= d; return true; }
+      if (!collides(nx, p.y + d, p.half, walls)) { p.x = nx; p.y += d; return true; }
     } else {
-      if (!collides(p.x - d, ny, p.half, walls)) { p.x -= d; p.y = ny; return; }
-      if (!collides(p.x + d, ny, p.half, walls)) { p.x += d; p.y = ny; return; }
+      if (!collides(p.x - d, ny, p.half, walls)) { p.x -= d; p.y = ny; return true; }
+      if (!collides(p.x + d, ny, p.half, walls)) { p.x += d; p.y = ny; return true; }
     }
   }
+  return false;
 }
-
-// Change size. Growing can be refused if the bigger cube would be stuck in
-// a wall; we first try to nudge it out, and only then give up.
 function setSize(p, newSize, walls){
   newSize = clamp(newSize, 0, MAX_SIZE);
   const nh = pxFor(newSize) / 2;
   if (nh > p.half && collides(p.x, p.y, nh, walls)){
     let ok = false;
     for (let d = 1; d <= 18 && !ok; d++){
-      const offs = [[d,0],[-d,0],[0,d],[0,-d],[d,d],[-d,d],[d,-d],[-d,-d]];
-      for (const o of offs){
-        if (!collides(p.x + o[0], p.y + o[1], nh, walls)){
-          p.x += o[0]; p.y += o[1]; ok = true; break;
-        }
+      for (const o of [[d,0],[-d,0],[0,d],[0,-d],[d,d],[-d,d],[d,-d],[-d,-d]]){
+        if (!collides(p.x + o[0], p.y + o[1], nh, walls)){ p.x += o[0]; p.y += o[1]; ok = true; break; }
       }
     }
     if (!ok) return false;
   }
   p.size = newSize; p.half = nh; return true;
 }
-
-/* ----------------------------------------------------------- 6. UPDATE */
-function beamRects(){
-  const out = [];
-  for (const b of level.beams){
-    const t = 0.5 + 0.5 * Math.sin(beamT * b.speed + b.phase);
-    out.push({x: b.x0 + (b.x1 - b.x0) * t, y: b.y, w: b.w, h: b.h});
+function beamRectsAt(lv, t){
+  return lv.beams.map(b => {
+    const k = 0.5 + 0.5 * Math.sin(t * b.speed + b.phase);
+    return {x: b.x0 + (b.x1 - b.x0) * k, y: b.y, w: b.w, h: b.h};
+  });
+}
+// how fast the cube melts standing at (x,y)
+function drainAt(lv, x, y, t){
+  if (lv.shade.some(r => pointIn(x, y, r))) return 0;
+  if (lv.hot.some(r => pointIn(x, y, r)))   return DRAIN_HOT;
+  if (lv.sun.some(r => pointIn(x, y, r)))   return DRAIN_SUN;
+  if (beamRectsAt(lv, t).some(r => pointIn(x, y, r))) return DRAIN_SUN;
+  return DRAIN_BASE;
+}
+// can the dog at A see the cube at B? (walk the segment, stop at a wall)
+function lineOfSight(ax, ay, bx, by, walls){
+  const d = Math.hypot(bx - ax, by - ay), n = Math.ceil(d / 8);
+  for (let i = 1; i < n; i++){
+    const x = ax + (bx - ax) * i / n, y = ay + (by - ay) * i / n;
+    for (const w of walls) if (pointIn(x, y, w)) return false;
   }
-  return out;
+  return true;
+}
+/*__VERIFY_CUT__*/
+
+/* ------------------------------------------------------------ 4. INPUT */
+const keys = Object.create(null);
+let confirmPressed = false, restartPressed = false;
+const BLOCK = {ArrowUp:1,ArrowDown:1,ArrowLeft:1,ArrowRight:1,Space:1};
+addEventListener("keydown", e => {
+  if (BLOCK[e.code]) e.preventDefault();
+  if (!keys[e.code]){
+    if (e.code === "Enter" || e.code === "Space") confirmPressed = true;
+    if (e.code === "KeyR") restartPressed = true;
+  }
+  keys[e.code] = true;
+});
+addEventListener("keyup", e => { keys[e.code] = false; });
+function axisInput(){
+  let dx = 0, dy = 0;
+  if (keys.KeyA || keys.ArrowLeft)  dx -= 1;
+  if (keys.KeyD || keys.ArrowRight) dx += 1;
+  if (keys.KeyW || keys.ArrowUp)    dy -= 1;
+  if (keys.KeyS || keys.ArrowDown)  dy += 1;
+  if (dx && dy){ dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
+  return {dx, dy};
 }
 
+/* ------------------------------------------------------- 5. GAME STATE */
+const STATE = {TITLE:"title", PLAY:"play", DEAD:"dead", LEVELEND:"levelend", WIN:"win"};
+let state = STATE.TITLE, levelIndex = 0, level = null;
+let player = null, flakes = [], dogs = [], gull = null;
+let levelTime = 0, bankedTime = 0, totalTime = 0, deaths = 0;
+let beamT = 0, worldTime = 0, shakeT = 0;
+
+function loadLevel(i){
+  levelIndex = i; level = LEVELS[i];
+  flakes = level.flakes.map(f => ({x:f.x, y:f.y, taken:false}));
+  lastZone = "open"; calloutT = 0;
+  player = {x:level.start.x, y:level.start.y, size:MAX_SIZE, half:pxFor(MAX_SIZE)/2,
+            inSun:false, inShade:false, moving:false, dripTimer:0, hurtT:0, kbx:0, kby:0};
+  dogs = level.dogs.map(d => ({x:d.x, y:d.y, half:DOG_HALF, path:d.path, wp:0,
+                               state:"wander", t:0, lostT:0, lickCd:0, fx:1, fy:0}));
+  gull = level.gull ? {phase:"circle", t:5, tx:0, ty:0, ang:0, x:0, y:0, h:1} : null;
+  levelTime = 0; beamT = 0;
+  buildScene();
+  state = STATE.PLAY;
+}
+function startGame(){ bankedTime = 0; totalTime = 0; deaths = 0; loadLevel(0); }
+
+/* ---------------------------------------------------------- 6. HAZARDS */
+function updateDogs(dt){
+  const p = player, walls = level.walls;
+  for (const d of dogs){
+    d.lickCd = Math.max(0, d.lickCd - dt);
+    const dist = Math.hypot(p.x - d.x, p.y - d.y);
+    const sees = dist < DOG_SIGHT && !p.inShade && lineOfSight(d.x, d.y, p.x, p.y, walls);
+
+    if (d.state === "pause"){ d.t -= dt; if (d.t <= 0) d.state = "wander"; continue; }
+    if (d.state === "wander" && sees){ d.state = "chase"; d.lostT = 0; }
+    if (d.state === "chase" && !sees){ d.lostT += dt; if (d.lostT > 2) d.state = "wander"; }
+
+    let tx, ty, sp;
+    if (d.state === "chase"){ tx = p.x; ty = p.y; sp = DOG_SPEED_CHASE; }
+    else {
+      const w = d.path[d.wp]; tx = w[0]; ty = w[1]; sp = DOG_SPEED_WANDER;
+      if (Math.hypot(tx - d.x, ty - d.y) < 12){ d.wp = (d.wp + 1) % d.path.length; continue; }
+    }
+    const vx = tx - d.x, vy = ty - d.y, L = Math.hypot(vx, vy) || 1;
+    const sx = vx / L * sp * dt, sy = vy / L * sp * dt;
+    // dogs hate the shade: never step into it
+    const inShadeNext = level.shade.some(r => pointIn(d.x + sx, d.y + sy, r));
+    if (!inShadeNext){
+      const ox = d.x, oy = d.y;
+      moveAxis(d, sx, 0, walls); moveAxis(d, 0, sy, walls);
+      if (Math.hypot(d.x - ox, d.y - oy) < 0.2 && d.state === "wander") d.wp = (d.wp + 1) % d.path.length; // stuck: next waypoint
+    }
+    d.fx = vx / L; d.fy = vy / L;
+
+    // lick!
+    if (d.lickCd <= 0 && dist < p.half + d.half + 2){
+      setSize(p, p.size - LICK_COST, walls);
+      const kx = (p.x - d.x) / (dist || 1), ky = (p.y - d.y) / (dist || 1);
+      p.kbx = kx * 260; p.kby = ky * 260;        // shove, decays in update()
+      p.hurtT = 0.4; shakeT = 0.25; callout("LICKED!  \u2212" + LICK_COST, "#ff9a7a");
+      d.lickCd = 1.2; d.state = "pause"; d.t = 1.4;
+      for (let i = 0; i < 12; i++) spawnDrip(p.x, p.y, false);
+    }
+  }
+}
+function updateGull(dt){
+  const g = gull, p = player;
+  if (!g) return;
+  g.t -= dt;
+  if (g.phase === "circle"){
+    g.ang += dt * 1.1;
+    g.x = p.x + Math.cos(g.ang) * 150; g.y = p.y + Math.sin(g.ang) * 110; g.h = 1;
+    if (g.t <= 0){ g.phase = "warn"; g.t = GULL_WARN; g.tx = p.x; g.ty = p.y; }
+  } else if (g.phase === "warn"){
+    g.ang += dt * 2.5;
+    g.x = g.tx + Math.cos(g.ang) * 60; g.y = g.ty + Math.sin(g.ang) * 60;
+    if (g.t <= 0){ g.phase = "dive"; g.t = GULL_DIVE; g.sx = g.x; g.sy = g.y; }
+  } else if (g.phase === "dive"){
+    const k = 1 - Math.max(0, g.t / GULL_DIVE);
+    g.x = g.sx + (g.tx - g.sx) * k; g.y = g.sy + (g.ty - g.sy) * k; g.h = 1 - k;
+    if (g.t <= 0){
+      if (Math.hypot(p.x - g.tx, p.y - g.ty) < GULL_HIT_R + p.half * 0.5){
+        setSize(p, p.size - GULL_COST, level.walls); p.hurtT = 0.4; shakeT = 0.3;
+        callout("PECKED!  \u2212" + GULL_COST, "#ff9a7a");
+        for (let i = 0; i < 12; i++) spawnDrip(p.x, p.y, false);
+      }
+      g.phase = "climb"; g.t = 1.2;
+    }
+  } else { // climb
+    g.h = Math.min(1, g.h + dt / 1.2);
+    if (g.t <= 0){ g.phase = "circle"; g.t = 5 + Math.random() * 3; }
+  }
+}
+
+/* ------------------------------------------------- 6b. CALLOUTS (HUD) */
+let calloutT = 0, lastZone = "open";
+function callout(text, color){
+  const el = document.getElementById("callout");
+  el.textContent = text; el.style.color = color; el.style.opacity = 1; calloutT = 1.4;
+}
+function zoneCallouts(p, rate){
+  const zone = p.inShade ? "shade" : rate >= DRAIN_HOT ? "hot" : rate >= DRAIN_SUN ? "sun" : "open";
+  if (zone !== lastZone){
+    if (zone === "sun")   callout("\u2600 SUN  \u2014  MELTING FAST!", "#ffd34d");
+    if (zone === "hot")   callout("\u2668 HOT TILE  \u2014  GET OFF!", "#ff6a4a");
+    if (zone === "shade") callout("\u263d SHADE  \u2014  safe, melting stopped", "#8fd0ff");
+    lastZone = zone;
+  }
+}
+
+/* ----------------------------------------------------------- 7. UPDATE */
 function update(dt){
   worldTime += dt;
   if (state !== STATE.PLAY) return;
-
-  beamT    += dt;
-  levelTime += dt;
-  totalTime = bankedTime + levelTime;
-
+  beamT += dt; levelTime += dt; totalTime = bankedTime + levelTime;
   const p = player, walls = level.walls;
 
-  /* move */
   const inp = axisInput();
-  p.moving = (inp.dx !== 0 || inp.dy !== 0);
+  p.moving = inp.dx !== 0 || inp.dy !== 0;
   const sp = speedFor(p.size) * dt;
   if (inp.dx) moveAxis(p, inp.dx * sp, 0, walls);
   if (inp.dy) moveAxis(p, 0, inp.dy * sp, walls);
+  if (p.kbx || p.kby){                                   // knockback from a lick
+    moveAxis(p, p.kbx * dt, 0, walls); moveAxis(p, 0, p.kby * dt, walls);
+    p.kbx *= Math.pow(0.001, dt); p.kby *= Math.pow(0.001, dt);
+    if (Math.abs(p.kbx) + Math.abs(p.kby) < 4){ p.kbx = p.kby = 0; }
+  }
+  p.hurtT = Math.max(0, p.hurtT - dt);
 
-  /* which zone is the cube standing in? (centre point = forgiving) */
-  const suns = level.sun.concat(beamRects());
   p.inShade = level.shade.some(r => pointIn(p.x, p.y, r));
-  p.inSun   = !p.inShade && suns.some(r => pointIn(p.x, p.y, r));
+  const rate = drainAt(level, p.x, p.y, beamT);
+  p.inSun = !p.inShade && rate >= DRAIN_SUN;
+  zoneCallouts(p, rate);
+  if (rate) setSize(p, p.size - rate * DIFFS[settings.diff].mult * dt, walls);
 
-  /* melt */
-  let rate = DRAIN_BASE;
-  if (p.inShade) rate = 0;
-  else if (p.inSun) rate = DRAIN_SUN;
-  if (rate) setSize(p, p.size - rate * dt, walls);
-
-  /* snowflakes */
   for (const f of flakes){
     if (f.taken) continue;
-    const dx = f.x - p.x, dy = f.y - p.y;
-    if (Math.hypot(dx, dy) < p.half + 12){
-      if (setSize(p, p.size + FLAKE_GAIN, walls)){
-        f.taken = true;
-        for (let i = 0; i < 10; i++) spawnDrip(f.x, f.y, true);
-      }
+    if (Math.hypot(f.x - p.x, f.y - p.y) < p.half + 12 && setSize(p, p.size + FLAKE_GAIN, walls)){
+      f.taken = true; callout("\u2744 +" + FLAKE_GAIN + " SIZE", "#ffffff");
+      for (let i = 0; i < 10; i++) spawnDrip(f.x, f.y, true);
     }
   }
 
-  /* drip trail */
+  updateDogs(dt);
+  updateGull(dt);
+
   p.dripTimer -= dt;
-  if (p.moving && p.dripTimer <= 0){
-    p.dripTimer = 0.07;
-    spawnDrip(p.x + (Math.random()-0.5)*p.half, p.y + p.half*0.6, false);
-  }
+  if (p.moving && p.dripTimer <= 0){ p.dripTimer = 0.07; spawnDrip(p.x + (Math.random()-0.5)*p.half, p.y + p.half*0.5, false); }
   if (p.inSun && Math.random() < dt * 14) spawnDrip(p.x, p.y, false);
 
-  updateDrips(dt);
-
-  /* melted? */
-  if (p.size <= 0){ state = STATE.DEAD; return; }
-
-  /* reached the freezer? */
+  if (p.size <= 0){ state = STATE.DEAD; deaths++; return; }
   const f = level.freezer;
   if (aabb(p.x-p.half, p.y-p.half, p.half*2, p.half*2, f.x, f.y, f.w, f.h)){
-    bankedTime += levelTime;
-    totalTime   = bankedTime;
+    bankedTime += levelTime; totalTime = bankedTime;
     state = (levelIndex >= LEVELS.length - 1) ? STATE.WIN : STATE.LEVELEND;
   }
 }
-
 function handleScreenKeys(){
   if (restartPressed){
     restartPressed = false;
@@ -328,341 +426,424 @@ function handleScreenKeys(){
   }
   if (!confirmPressed) return;
   confirmPressed = false;
-  if      (state === STATE.TITLE)    startGame();
+  if      (state === STATE.TITLE){ if (menuPage === "main") startGame(); else menu("back"); }
   else if (state === STATE.DEAD)     loadLevel(levelIndex);
   else if (state === STATE.LEVELEND) loadLevel(levelIndex + 1);
   else if (state === STATE.WIN)      startGame();
 }
 
-/* -------------------------------------------------------- 7. PARTICLES */
-function spawnDrip(x, y, sparkle){
-  drips.push({x, y, vx:(Math.random()-0.5)*25, vy: 10 + Math.random()*30,
-              r: sparkle ? 2.5 : 1.5 + Math.random()*1.8,
-              life: sparkle ? 0.5 : 0.75, max: sparkle ? 0.5 : 0.75,
-              sparkle: !!sparkle});
-}
-function updateDrips(dt){
-  for (let i = drips.length - 1; i >= 0; i--){
-    const d = drips[i];
-    d.life -= dt;
-    d.x += d.vx * dt; d.y += d.vy * dt; d.vy += 60 * dt;
-    if (d.life <= 0) drips.splice(i, 1);
+/* ------------------------------------------------- 8. THREE.JS SCENE */
+const hasThree = typeof THREE !== "undefined";
+let renderer, scene, camera, levelGroup, sunLight;
+let cubeMesh, cubeMat, eyeL, eyeR, browL, browR, mouthMesh, sweat = [], puddle;
+let sunOrbs = [];
+let flakeMeshes = [], beamMeshes = [], dogMeshes = [], gullMesh = null, gullShadow = null, slotMeshes = [];
+const drips = [];          // {mesh, vx, vy, vz, life, max}
+const dripPool = [];
+const X = px => px / U, Z = py => py / U;     // px -> world
+
+function initThree(){
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  document.body.appendChild(renderer.domElement);
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b1020);
+  scene.fog = new THREE.Fog(0x0b1020, 40, 90);
+
+  camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 200);
+  camera.position.set(24, 17, 28);
+
+  scene.add(new THREE.HemisphereLight(0x8fb4ff, 0x1a1030, 0.55));
+  sunLight = new THREE.DirectionalLight(0xfff2cc, 1.0);
+  sunLight.position.set(18, 30, 10);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(2048, 2048);
+  const sc = sunLight.shadow.camera;
+  sc.left = -40; sc.right = 40; sc.top = 40; sc.bottom = -40; sc.near = 1; sc.far = 90;
+  scene.add(sunLight); scene.add(sunLight.target);
+  sunLight.target.position.set(24, 0, 16);
+
+  // the ice cube (a group so the face can ride on it)
+  cubeMesh = new THREE.Group();
+  cubeMat = new THREE.MeshStandardMaterial({color:0xb6ecff, emissive:0x1e4a66, transparent:true, opacity:0.88,
+                                            roughness:0.15, metalness:0.1});
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), cubeMat);
+  body.castShadow = true; cubeMesh.add(body);
+  const eyeGeo = new THREE.SphereGeometry(0.1, 12, 12), eyeMat = new THREE.MeshStandardMaterial({color:0xffffff});
+  const pupGeo = new THREE.SphereGeometry(0.05, 10, 10), pupMat = new THREE.MeshStandardMaterial({color:0x113333});
+  eyeL = new THREE.Group(); eyeR = new THREE.Group();
+  for (const [g, sx] of [[eyeL,-0.2],[eyeR,0.2]]){
+    const e = new THREE.Mesh(eyeGeo, eyeMat), pu = new THREE.Mesh(pupGeo, pupMat);
+    pu.position.z = 0.07; g.add(e); g.add(pu); g.position.set(sx, 0.1, 0.5); cubeMesh.add(g);
   }
+  const browGeo = new THREE.BoxGeometry(0.22, 0.04, 0.04), browMat = new THREE.MeshStandardMaterial({color:0x113333});
+  browL = new THREE.Mesh(browGeo, browMat); browL.position.set(-0.2, 0.3, 0.52); browL.rotation.z = -0.5;
+  browR = new THREE.Mesh(browGeo, browMat); browR.position.set( 0.2, 0.3, 0.52); browR.rotation.z =  0.5;
+  cubeMesh.add(browL); cubeMesh.add(browR);
+  mouthMesh = new THREE.Mesh(new THREE.TorusGeometry(0.08, 0.025, 8, 16), browMat);
+  mouthMesh.position.set(0, -0.2, 0.52); cubeMesh.add(mouthMesh);
+  const sweatGeo = new THREE.SphereGeometry(0.07, 8, 8), sweatMat = new THREE.MeshStandardMaterial({color:0xbfe9ff, emissive:0x4488aa});
+  for (let i = 0; i < 3; i++){ const s = new THREE.Mesh(sweatGeo, sweatMat); s.visible = false; cubeMesh.add(s); sweat.push(s); }
+  scene.add(cubeMesh);
+
+  puddle = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 0.06, 24),
+                          new THREE.MeshStandardMaterial({color:0x6eb9ff, transparent:true, opacity:0.8}));
+  puddle.visible = false; scene.add(puddle);
+
+  addEventListener("resize", () => {
+    renderer.setSize(innerWidth, innerHeight);
+    camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  });
 }
 
-/* -------------------------------------------------------- 8. RENDERING */
-function drawRoundRect(x, y, w, h, r){
-  r = Math.min(r, w/2, h/2);
-  ctx.beginPath();
-  ctx.moveTo(x+r, y);
-  ctx.arcTo(x+w, y,   x+w, y+h, r);
-  ctx.arcTo(x+w, y+h, x,   y+h, r);
-  ctx.arcTo(x,   y+h, x,   y,   r);
-  ctx.arcTo(x,   y,   x+w, y,   r);
-  ctx.closePath();
+function box(w, h, d, color, opts){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
+                           new THREE.MeshStandardMaterial(Object.assign({color}, opts || {})));
+  return m;
+}
+function floorPatch(r, color, emissive, opacity){
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(r.w / U, r.h / U),
+     new THREE.MeshStandardMaterial({color, emissive, emissiveIntensity:0.9, transparent:opacity<1, opacity}));
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(X(r.x + r.w/2), 0.02, Z(r.y + r.h/2));
+  m.receiveShadow = true;
+  return m;
+}
+function makeDogMesh(){
+  const g = new THREE.Group();
+  const fur = {color:0xb8773a, roughness:0.9};
+  const bodyM = box(1.3, 0.7, 0.8, fur.color, fur); bodyM.position.y = 0.55; bodyM.castShadow = true; g.add(bodyM);
+  const head = box(0.6, 0.6, 0.65, fur.color, fur); head.position.set(0.85, 0.95, 0); head.castShadow = true; g.add(head);
+  const snout = box(0.3, 0.3, 0.4, 0x8a5a2a); snout.position.set(1.25, 0.82, 0); g.add(snout);
+  const tongue = box(0.32, 0.06, 0.18, 0xff6b9a, {emissive:0x661133}); tongue.position.set(1.45, 0.66, 0); g.add(tongue);
+  g.userData.tongue = tongue;
+  for (const sz of [-0.25, 0.25]){ const ear = box(0.2, 0.35, 0.15, 0x7a4a1e); ear.position.set(0.7, 1.3, sz); g.add(ear); }
+  for (const [ex, ez] of [[-0.4,-0.25],[-0.4,0.25],[0.4,-0.25],[0.4,0.25]]){
+    const leg = box(0.2, 0.45, 0.2, 0x8a5a2a); leg.position.set(ex, 0.22, ez); g.add(leg); }
+  const tail = box(0.5, 0.1, 0.1, 0x8a5a2a); tail.position.set(-0.85, 0.85, 0); tail.rotation.z = 0.6; g.add(tail);
+  const eyeM = new THREE.MeshStandardMaterial({color:0x111111});
+  for (const ez of [-0.18, 0.18]){ const e = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), eyeM); e.position.set(1.12, 1.05, ez); g.add(e); }
+  return g;
+}
+function makeSunOrb(){
+  const g = new THREE.Group();
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.75, 20, 20),
+      new THREE.MeshStandardMaterial({color:0xffe27a, emissive:0xffb800, emissiveIntensity:1.2}));
+  g.add(orb);
+  const rayMat = new THREE.MeshBasicMaterial({color:0xffd34d});
+  for (let i = 0; i < 8; i++){
+    const ray = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.12, 0.12), rayMat);
+    const a = i / 8 * Math.PI * 2;
+    ray.position.set(Math.cos(a) * 1.35, Math.sin(a) * 1.35, 0); ray.rotation.z = a; g.add(ray);
+  }
+  const light = new THREE.PointLight(0xffcc55, 1.1, 10); g.add(light);
+  g.userData.orb = orb;
+  return g;
+}
+function makeGullMesh(){
+  const g = new THREE.Group();
+  const bodyM = box(0.9, 0.35, 0.4, 0xf4f6fa); bodyM.castShadow = true; g.add(bodyM);
+  const head = box(0.35, 0.3, 0.3, 0xf4f6fa); head.position.set(0.55, 0.15, 0); g.add(head);
+  const beak = box(0.3, 0.1, 0.1, 0xffb347); beak.position.set(0.85, 0.12, 0); g.add(beak);
+  const wingL = box(0.5, 0.06, 1.3, 0xd9dde5); wingL.position.set(0, 0.1, -0.75); g.add(wingL);
+  const wingR = box(0.5, 0.06, 1.3, 0xd9dde5); wingR.position.set(0, 0.1,  0.75); g.add(wingR);
+  g.userData.wings = [wingL, wingR];
+  return g;
 }
 
-function drawArena(){
+function buildScene(){
+  if (!hasThree) return;
+  if (levelGroup) scene.remove(levelGroup);
+  levelGroup = new THREE.Group(); scene.add(levelGroup);
+  flakeMeshes = []; beamMeshes = []; dogMeshes = []; slotMeshes = []; sunOrbs = [];
+  gullMesh = null; gullShadow = null;
+
   // floor
-  ctx.fillStyle = "#11203a";
-  ctx.fillRect(0, PLAY_TOP, W, H - PLAY_TOP);
-  ctx.strokeStyle = "rgba(255,255,255,0.035)";
-  ctx.lineWidth = 1;
-  for (let x = 20; x < W; x += 40){
-    ctx.beginPath(); ctx.moveTo(x, PLAY_TOP); ctx.lineTo(x, H); ctx.stroke();
-  }
-  for (let y = PLAY_TOP; y < H; y += 40){
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-  }
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(W / U, (H - PLAY_TOP) / U),
+                               new THREE.MeshStandardMaterial({color:0x1c2a4a, roughness:0.95}));
+  floor.rotation.x = -Math.PI / 2; floor.position.set(X(W/2), 0, Z((H + PLAY_TOP) / 2)); floor.receiveShadow = true;
+  levelGroup.add(floor);
+  // faint grid so distance reads
+  const grid = new THREE.GridHelper(48, 24, 0x2a3a60, 0x22304f); grid.position.set(X(W/2), 0.01, Z((H + PLAY_TOP)/2));
+  levelGroup.add(grid);
 
-  // shade patches
+  // zones
   for (const r of level.shade){
-    ctx.fillStyle = "#0b1a38";
-    ctx.fillRect(r.x, r.y, r.w, r.h);
-    ctx.strokeStyle = "#1d3a6e"; ctx.lineWidth = 2;
-    ctx.strokeRect(r.x+1, r.y+1, r.w-2, r.h-2);
-    ctx.fillStyle = "rgba(150,190,255,0.55)";
-    ctx.font = "bold 11px system-ui"; ctx.textAlign = "center";
-    ctx.fillText("SHADE", r.x + r.w/2, r.y + 16);
+    levelGroup.add(floorPatch(r, 0x0b1a38, 0x061024, 1));
+    const awning = box(r.w / U, 0.12, r.h / U, 0x1d3a6e, {transparent:true, opacity:0.35, depthWrite:false});
+    awning.position.set(X(r.x + r.w/2), 3.6, Z(r.y + r.h/2)); awning.castShadow = true; levelGroup.add(awning);
+    for (const [cx, cz] of [[r.x, r.y],[r.x+r.w, r.y],[r.x, r.y+r.h],[r.x+r.w, r.y+r.h]]){
+      const post = box(0.12, 3.6, 0.12, 0x2d4f8a); post.position.set(X(cx), 1.8, Z(cz)); levelGroup.add(post);
+    }
   }
-
-  // sun patches (static + sweeping beams)
-  const suns = level.sun.map(r => ({r, beam:false}))
-              .concat(beamRects().map(r => ({r, beam:true})));
-  for (const s of suns){
-    const r = s.r;
-    const g = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
-    g.addColorStop(0, "rgba(255,226,110,0.80)");
-    g.addColorStop(1, "rgba(255,190,60,0.62)");
-    ctx.fillStyle = g;
-    ctx.fillRect(r.x, r.y, r.w, r.h);
-    ctx.strokeStyle = s.beam ? "rgba(255,255,255,0.75)" : "rgba(255,240,170,0.9)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(r.x+1, r.y+1, r.w-2, r.h-2);
-    ctx.fillStyle = "rgba(120,80,0,0.55)";
-    ctx.font = "bold 11px system-ui"; ctx.textAlign = "center";
-    ctx.fillText(s.beam ? "BEAM" : "SUN", r.x + r.w/2, r.y + 16);
+  for (const r of level.sun){
+    levelGroup.add(floorPatch(r, 0xffd966, 0xffb830, 1));
+    const col = box(r.w / U, 5, r.h / U, 0xffe27a, {transparent:true, opacity:0.10, emissive:0xffcc55, depthWrite:false});
+    col.position.set(X(r.x + r.w/2), 2.5, Z(r.y + r.h/2)); levelGroup.add(col);
+    const orb = makeSunOrb(); orb.position.set(X(r.x + r.w/2), 6.2, Z(r.y + r.h/2)); levelGroup.add(orb); sunOrbs.push(orb);
+  }
+  for (const r of level.hot){
+    const m = floorPatch(r, 0xff4a3a, 0xff2200, 1); m.userData.hot = true; levelGroup.add(m);
+  }
+  for (const b of level.beams){
+    const r = {x:b.x0, y:b.y, w:b.w, h:b.h};
+    const g = new THREE.Group();
+    g.add(floorPatch({x:-r.w/2*0, y:0, w:r.w, h:r.h}, 0xffd966, 0xffb830, 1));
+    const col = box(r.w / U, 5, r.h / U, 0xffffff, {transparent:true, opacity:0.14, emissive:0xffdd77, depthWrite:false});
+    col.position.y = 2.5; g.add(col);
+    g.children[0].position.set(0, 0.03, 0);
+    g.position.set(X(r.x + r.w/2), 0, Z(r.y + r.h/2));
+    const orb = makeSunOrb(); orb.position.y = 6.2; g.add(orb); sunOrbs.push(orb);
+    levelGroup.add(g); beamMeshes.push(g);
   }
 
   // walls
   for (const w of level.walls){
-    ctx.fillStyle = "#2b3550";
-    ctx.fillRect(w.x, w.y, w.w, w.h);
-    ctx.fillStyle = "#3d4a6b";
-    ctx.fillRect(w.x, w.y, w.w, Math.min(5, w.h));
+    const m = box(w.w / U, 2.2, w.h / U, 0x2b3550, {roughness:0.8});
+    m.position.set(X(w.x + w.w/2), 1.1, Z(w.y + w.h/2)); m.castShadow = true; m.receiveShadow = true;
+    levelGroup.add(m);
   }
-
-  // slot markers: a pulsing bracket around every narrow gap
-  const pulse = 0.55 + 0.45 * Math.sin(worldTime * 4);
+  // slot markers: glowing frame on the floor of each gap
   for (const g of level.slots){
-    ctx.strokeStyle = "rgba(150,235,255," + (0.45 + 0.45 * pulse) + ")";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(g.x - 7, g.y);       ctx.lineTo(g.x + g.w + 7, g.y);
-    ctx.moveTo(g.x - 7, g.y + g.h); ctx.lineTo(g.x + g.w + 7, g.y + g.h);
-    ctx.stroke();
-    // the cube only fits if it is drawn narrower than this
-    ctx.fillStyle = "rgba(150,235,255,0.18)";
-    ctx.fillRect(g.x, g.y, g.w, g.h);
+    const m = floorPatch({x:g.x - 8, y:g.y, w:g.w + 16, h:g.h}, 0x96ebff, 0x55ccff, 0.7);
+    m.position.y = 0.04; levelGroup.add(m); slotMeshes.push(m);
   }
-}
 
-function drawFreezer(){
+  // freezer
   const f = level.freezer;
-  const pulse = 0.5 + 0.5 * Math.sin(worldTime * 3);
-  ctx.save();
-  ctx.shadowColor = "rgba(120,220,255," + (0.5 + 0.4*pulse) + ")";
-  ctx.shadowBlur  = 22;
-  ctx.fillStyle = "#cfe9ff";
-  drawRoundRect(f.x, f.y, f.w, f.h, 7); ctx.fill();
-  ctx.restore();
-  ctx.fillStyle = "#9fd0f5";
-  ctx.fillRect(f.x + 6, f.y + 10, f.w - 12, f.h - 20);
-  ctx.fillStyle = "#64a9dd";
-  ctx.fillRect(f.x + f.w - 16, f.y + 22, 6, 24);          // handle
-  ctx.fillStyle = "#1b3a5c";
-  ctx.font = "bold 10px system-ui"; ctx.textAlign = "center";
-  ctx.fillText("FREEZER", f.x + f.w/2, f.y + f.h - 6);
+  const fz = box(f.w / U, 3.8, f.h / U, 0xcfe9ff, {emissive:0x5fb8ff, emissiveIntensity:0.5, roughness:0.3});
+  fz.position.set(X(f.x + f.w/2), 1.9, Z(f.y + f.h/2)); fz.castShadow = true; levelGroup.add(fz);
+  const door = box(f.w / U * 0.8, 2.6, 0.08, 0x9fd0f5); door.position.set(X(f.x + f.w/2), 1.9, Z(f.y + f.h) + 0.05); levelGroup.add(door);
+  const handle = box(0.12, 1.0, 0.12, 0x2d5a8a); handle.position.set(X(f.x + f.w) - 0.6, 1.9, Z(f.y + f.h) + 0.15); levelGroup.add(handle);
+  const fl = new THREE.PointLight(0x7fdfff, 1.4, 14); fl.position.set(X(f.x + f.w/2), 4.5, Z(f.y + f.h/2)); levelGroup.add(fl);
+
+  // snowflakes
+  const flGeo = new THREE.OctahedronGeometry(0.45, 0);
+  const flMat = new THREE.MeshStandardMaterial({color:0xffffff, emissive:0x9fe0ff, emissiveIntensity:0.8});
+  for (const s of flakes){
+    const m = new THREE.Mesh(flGeo, flMat); m.position.set(X(s.x), 0.9, Z(s.y)); m.castShadow = true;
+    levelGroup.add(m); flakeMeshes.push(m);
+  }
+
+  // hazards
+  for (const d of dogs){ const m = makeDogMesh(); levelGroup.add(m); dogMeshes.push(m); }
+  if (gull){
+    gullMesh = makeGullMesh(); levelGroup.add(gullMesh);
+    gullShadow = new THREE.Mesh(new THREE.CircleGeometry(1, 32),
+       new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.55}));
+    gullShadow.rotation.x = -Math.PI / 2; gullShadow.position.y = 0.05; gullShadow.visible = false;
+    levelGroup.add(gullShadow);
+  }
+  for (const d of drips){ d.mesh.visible = false; }   // clear old particles
+  drips.length = 0;
 }
 
-function drawFlakes(){
-  for (const f of flakes){
-    if (f.taken) continue;
-    const bob = Math.sin(worldTime * 3 + f.x) * 2;
-    ctx.save();
-    ctx.translate(f.x, f.y + bob);
-    ctx.strokeStyle = "#e8f8ff"; ctx.lineWidth = 2.2; ctx.lineCap = "round";
-    ctx.shadowColor = "#8fdcff"; ctx.shadowBlur = 10;
+/* particles: a pool of little blue spheres */
+const dripGeo = hasThree ? new THREE.SphereGeometry(0.09, 6, 6) : null;
+const dripMatBlue = hasThree ? new THREE.MeshBasicMaterial({color:0x6eb9ff, transparent:true, opacity:0.85}) : null;
+const dripMatWhite = hasThree ? new THREE.MeshBasicMaterial({color:0xe6f7ff, transparent:true, opacity:0.95}) : null;
+function spawnDrip(px, py, sparkle){
+  if (!hasThree) return;
+  let d = dripPool.pop();
+  if (!d){ d = {mesh:new THREE.Mesh(dripGeo, dripMatBlue)}; scene.add(d.mesh); }
+  d.mesh.material = sparkle ? dripMatWhite : dripMatBlue;
+  d.mesh.visible = true;
+  d.mesh.position.set(X(px), sparkle ? 1.0 : 0.2 + Math.random() * 0.3, Z(py));
+  d.vx = (Math.random() - 0.5) * 1.5; d.vz = (Math.random() - 0.5) * 1.5;
+  d.vy = sparkle ? 2 + Math.random() * 2 : 0.3;
+  d.life = d.max = sparkle ? 0.6 : 0.7;
+  const s = sparkle ? 1.2 : 0.7 + Math.random() * 0.6; d.mesh.scale.setScalar(s); d.s0 = s;
+  drips.push(d);
+}
+function updateDrips(dt){
+  for (let i = drips.length - 1; i >= 0; i--){
+    const d = drips[i]; d.life -= dt;
+    d.mesh.position.x += d.vx * dt; d.mesh.position.z += d.vz * dt; d.mesh.position.y += d.vy * dt;
+    d.vy -= 5 * dt;
+    if (d.mesh.position.y < 0.05){ d.mesh.position.y = 0.05; d.vy = 0; d.vx *= 0.8; d.vz *= 0.8; }
+    d.mesh.scale.setScalar(Math.max(0.01, d.s0 * d.life / d.max));
+    if (d.life <= 0){ d.mesh.visible = false; drips.splice(i, 1); dripPool.push(d); }
+  }
+}
+
+function render3D(dt){
+  if (!hasThree) return;
+  const p = player;
+  // --- cube ---
+  const s = pxFor(p.size) / U;
+  const alive = p.size > 0;
+  cubeMesh.visible = alive; puddle.visible = !alive;
+  if (alive){
+    cubeMesh.scale.setScalar(s);
+    cubeMesh.position.set(X(p.x), s / 2 + 0.02, Z(p.y));
+    const worried = p.size < 45;
+    browL.visible = browR.visible = mouthMesh.visible = worried;
+    const look = worried ? Math.sin(worldTime * 9) * 0.04 : 0;
+    eyeL.position.x = -0.2 + look; eyeR.position.x = 0.2 + look;
+    cubeMat.color.setHex(p.hurtT > 0 ? 0xff9a9a : 0xb6ecff);
+    cubeMat.emissive.setHex(p.hurtT > 0 ? 0x661111 : 0x1e4a66);
+    if (p.moving) cubeMesh.rotation.y += Math.sin(worldTime * 12) * 0.002; else cubeMesh.rotation.y *= 0.9;
     for (let i = 0; i < 3; i++){
-      ctx.rotate(Math.PI / 3);
-      ctx.beginPath(); ctx.moveTo(-9, 0); ctx.lineTo(9, 0); ctx.stroke();
+      const sw = sweat[i]; sw.visible = p.inSun;
+      const t = (worldTime * 2.2 + i * 0.4) % 1;
+      sw.position.set((i - 1) * 0.42, 0.55 + t * 0.5, 0.3); sw.scale.setScalar(1 - t * 0.7);
     }
-    ctx.restore();
+  } else {
+    puddle.position.set(X(p.x), 0.03, Z(p.y));
   }
-}
-
-function drawDrips(){
-  for (const d of drips){
-    const a = Math.max(0, d.life / d.max);
-    ctx.fillStyle = d.sparkle
-      ? "rgba(220,245,255," + a + ")"
-      : "rgba(110,185,255," + (a * 0.8) + ")";
-    ctx.beginPath(); ctx.arc(d.x, d.y, d.r * a + 0.5, 0, Math.PI*2); ctx.fill();
+  // --- level bits ---
+  for (let i = 0; i < flakeMeshes.length; i++){
+    const m = flakeMeshes[i]; m.visible = !flakes[i].taken;
+    m.rotation.y += dt * 2; m.position.y = 0.9 + Math.sin(worldTime * 3 + i) * 0.12;
   }
-}
-
-function drawCube(){
-  const p = player, s = p.half * 2;
-  const worried = p.size < 45;
-  ctx.save();
-  ctx.translate(p.x, p.y);
-
-  // body
-  ctx.shadowColor = "rgba(120,200,255,0.75)"; ctx.shadowBlur = 12;
-  ctx.fillStyle = "#b6ecff";
-  drawRoundRect(-p.half, -p.half, s, s, Math.max(3, s*0.18)); ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = Math.max(1, s*0.05);
-  drawRoundRect(-p.half, -p.half, s, s, Math.max(3, s*0.18)); ctx.stroke();
-  ctx.fillStyle = "rgba(255,255,255,0.55)";                 // highlight
-  ctx.fillRect(-p.half + s*0.15, -p.half + s*0.15, s*0.22, s*0.22);
-
-  // face
-  const eyeOff = s * 0.19, eyeR = Math.max(1.4, s * 0.1);
-  ctx.fillStyle = "#ffffff";
-  ctx.beginPath(); ctx.arc(-eyeOff, -s*0.06, eyeR, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc( eyeOff, -s*0.06, eyeR, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = "#133";
-  const pr = Math.max(0.9, eyeR * 0.55);
-  const look = worried ? Math.sin(worldTime * 9) * eyeR * 0.3 : 0;
-  ctx.beginPath(); ctx.arc(-eyeOff + look, -s*0.06, pr, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc( eyeOff + look, -s*0.06, pr, 0, Math.PI*2); ctx.fill();
-
-  ctx.strokeStyle = "#133"; ctx.lineWidth = Math.max(1, s*0.045); ctx.lineCap = "round";
-  if (worried){                                             // worried brows + o-mouth
-    ctx.beginPath();
-    ctx.moveTo(-eyeOff - eyeR, -s*0.26); ctx.lineTo(-eyeOff + eyeR, -s*0.19);
-    ctx.moveTo( eyeOff + eyeR, -s*0.26); ctx.lineTo( eyeOff - eyeR, -s*0.19);
-    ctx.stroke();
-    ctx.beginPath(); ctx.arc(0, s*0.18, Math.max(1.2, s*0.08), 0, Math.PI*2); ctx.stroke();
-  } else {                                                  // calm smile
-    ctx.beginPath(); ctx.arc(0, s*0.10, s*0.17, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
+  const br = beamRectsAt(level, beamT);
+  for (let i = 0; i < beamMeshes.length; i++) beamMeshes[i].position.x = X(br[i].x + br[i].w / 2);
+  for (const o of sunOrbs){ o.rotation.z += dt * 0.8; o.quaternion.copy(camera.quaternion); o.userData.orb.scale.setScalar(1 + 0.08 * Math.sin(worldTime * 5)); }
+  const pulse = 0.4 + 0.3 * Math.sin(worldTime * 4);
+  for (const m of slotMeshes) m.material.opacity = pulse + 0.3;
+  for (const c of levelGroup.children) if (c.userData.hot) c.material.emissiveIntensity = 0.7 + 0.4 * Math.sin(worldTime * 6);
+  // --- dogs ---
+  for (let i = 0; i < dogMeshes.length; i++){
+    const d = dogs[i], m = dogMeshes[i];
+    m.position.set(X(d.x), 0, Z(d.y));
+    m.rotation.y = Math.atan2(-d.fy, d.fx);
+    const run = d.state === "chase" ? 18 : 9;
+    m.position.y = Math.abs(Math.sin(worldTime * run)) * 0.12;
+    m.userData.tongue.scale.x = d.state === "chase" ? 1.8 + Math.sin(worldTime * 20) * 0.4 : 1;
   }
-
-  // sweat drops in the sun
-  if (p.inSun){
-    ctx.fillStyle = "rgba(190,235,255,0.95)";
-    for (let i = 0; i < 3; i++){
-      const t  = (worldTime * 2.2 + i * 0.4) % 1;
-      const sx = (i - 1) * s * 0.42;
-      const sy = -p.half - 4 - t * 10;
-      ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.3, s*0.07) * (1 - t), 0, Math.PI*2);
-      ctx.fill();
+  // --- gull ---
+  if (gull){
+    const g = gull;
+    gullMesh.position.set(X(g.x), 1.2 + g.h * 9, Z(g.y));
+    const dir = g.phase === "dive" ? Math.atan2(-(g.ty - g.sy), g.tx - g.sx) : g.ang + Math.PI / 2;
+    gullMesh.rotation.y = dir;
+    gullMesh.rotation.z = g.phase === "dive" ? -0.9 : 0;
+    const flap = Math.sin(worldTime * 10) * 0.5;
+    gullMesh.userData.wings[0].rotation.x =  flap; gullMesh.userData.wings[1].rotation.x = -flap;
+    gullShadow.visible = g.phase === "warn" || g.phase === "dive";
+    if (gullShadow.visible){
+      const k = g.phase === "warn" ? 1 - g.t / GULL_WARN : 1;
+      gullShadow.position.set(X(g.tx), 0.05, Z(g.ty));
+      gullShadow.scale.setScalar(0.3 + 1.5 * k);
+      gullShadow.material.opacity = 0.35 + 0.4 * k;
     }
   }
-  ctx.restore();
+  updateDrips(dt);
+
+  // --- camera: angled overhead, follows the cube, little shake when hurt ---
+  const tx = X(p.x), tz = Z(p.y);
+  const want = settings.camFar ? new THREE.Vector3(tx, 26, tz + 18) : new THREE.Vector3(tx, 20, tz + 14);
+  camera.position.lerp(want, 1 - Math.pow(0.001, dt));
+  if (shakeT > 0 && !settings.shake) shakeT = 0;
+  if (shakeT > 0){ shakeT -= dt; camera.position.x += (Math.random()-0.5) * 0.3; camera.position.z += (Math.random()-0.5) * 0.3; }
+  camera.lookAt(tx, 0.5, tz);
+  renderer.render(scene, camera);
 }
 
-function drawHUD(){
-  ctx.fillStyle = "#0a0f1e";
-  ctx.fillRect(0, 0, W, PLAY_TOP);
-  ctx.fillStyle = "#1c2742";
-  ctx.fillRect(0, PLAY_TOP - 2, W, 2);
-
+/* ----------------------------------------------------- 9. HUD / SCREENS */
+const $ = id => document.getElementById(id);
+function renderHUD(){
   const frac = player ? player.size / MAX_SIZE : 1;
-  ctx.fillStyle = "#cfe0ff";
-  ctx.font = "bold 13px system-ui"; ctx.textAlign = "left";
-  ctx.fillText("SIZE", 20, 33);
-
-  const bx = 62, by = 19, bw = 300, bh = 18;
-  ctx.fillStyle = "#17223c"; drawRoundRect(bx, by, bw, bh, 5); ctx.fill();
-  // blue at full, red when nearly melted
-  const r = Math.round(255 - 185 * frac);
-  const g = Math.round(70  + 100 * frac);
-  const b = Math.round(70  + 185 * frac);
-  ctx.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
-  if (frac > 0) { drawRoundRect(bx, by, Math.max(4, bw * frac), bh, 5); ctx.fill(); }
-  ctx.strokeStyle = "#39507e"; ctx.lineWidth = 1.5;
-  drawRoundRect(bx, by, bw, bh, 5); ctx.stroke();
-  ctx.fillStyle = "#eaf4ff"; ctx.font = "bold 11px system-ui"; ctx.textAlign = "right";
-  ctx.fillText(Math.ceil(player ? player.size : 0), bx + bw - 7, by + 13);
-
-  ctx.textAlign = "left"; ctx.font = "bold 14px system-ui"; ctx.fillStyle = "#cfe0ff";
-  ctx.fillText("LEVEL " + (levelIndex + 1) + " / " + LEVELS.length, 400, 33);
-  ctx.fillText("TIME " + fmtTime(levelTime), 540, 33);
-  ctx.fillStyle = "#7a8cb0"; ctx.font = "12px system-ui";
-  ctx.fillText("WASD / Arrows  -  R restarts level", 690, 33);
+  const r = Math.round(255 - 185 * frac), g = Math.round(70 + 100 * frac), b = Math.round(70 + 185 * frac);
+  $("fill").style.width = (frac * 100) + "%";
+  $("fill").style.background = "rgb(" + r + "," + g + "," + b + ")";
+  $("num").textContent = Math.ceil(player ? player.size : 0);
+  $("lvl").textContent = "LEVEL " + (levelIndex + 1) + " / " + LEVELS.length;
+  $("time").textContent = "TIME " + fmtTime(levelTime);
+  $("deaths").textContent = "MELTS " + deaths;
+  $("tip").innerHTML = level ? level.tips.join("<br>") : "";
+  $("hud").className = (player && player.size > 0 && state === STATE.PLAY && !player.inShade &&
+                        drainAt(level, player.x, player.y, beamT) >= DRAIN_SUN) ? "melting" : "";
+  if (calloutT > 0){ calloutT -= 1/60; if (calloutT <= 0) $("callout").style.opacity = 0; }
 }
-
-function drawTips(){
-  const tips = level.tips;
-  ctx.fillStyle = "rgba(6,10,22,0.82)";
-  ctx.fillRect(0, H - 34, W, 34);
-  ctx.textAlign = "center"; ctx.fillStyle = "#b9ccf0";
-  ctx.font = "12px system-ui";
-  ctx.fillText(tips[0], W/2, H - 20);
-  if (tips[1]) ctx.fillText(tips[1], W/2, H - 6);
+let lastScreen = null, menuPage = "main";
+function menu(action){                         // called by the buttons (onclick) and by keys
+  if (action === "play"){ menuPage = "main"; startGame(); }
+  else if (action === "settings") menuPage = "settings";
+  else if (action === "help") menuPage = "help";
+  else if (action === "back") menuPage = "main";
+  else if (action === "diff"){ settings.diff = (settings.diff + 1) % DIFFS.length; saveSettings(); }
+  else if (action === "shake"){ settings.shake = !settings.shake; saveSettings(); }
+  else if (action === "cam"){ settings.camFar = !settings.camFar; saveSettings(); }
+  lastScreen = null;
 }
-
-function overlay(lines){
-  ctx.fillStyle = "rgba(5,9,20,0.86)";
-  ctx.fillRect(0, 0, W, H);
-  ctx.textAlign = "center";
-  let y = 150;
-  for (const L of lines){
-    ctx.fillStyle = L.color || "#e9f3ff";
-    ctx.font = (L.bold ? "bold " : "") + (L.size || 18) + "px system-ui";
-    ctx.fillText(L.text, W/2, y);
-    y += (L.size || 18) + (L.gap || 14);
+window.menu = menu;
+addEventListener("keydown", e => {
+  if (state !== STATE.TITLE) return;
+  if (e.code === "KeyS" && menuPage === "main") menu("settings");
+  if (e.code === "KeyH" && menuPage === "main") menu("help");
+  if (e.code === "Escape" || e.code === "Backspace") menu("back");
+  if (menuPage === "settings"){
+    if (e.code === "Digit1") menu("diff"); if (e.code === "Digit2") menu("shake"); if (e.code === "Digit3") menu("cam");
   }
-}
-
-function drawTitleArt(){
-  // a big friendly cube above the title
-  ctx.save();
-  ctx.translate(W/2, 110 + Math.sin(worldTime*2)*5);
-  ctx.shadowColor = "rgba(120,200,255,0.8)"; ctx.shadowBlur = 25;
-  ctx.fillStyle = "#b6ecff";
-  drawRoundRect(-34, -34, 68, 68, 12); ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = "#fff";
-  ctx.beginPath(); ctx.arc(-12, -4, 7, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc( 12, -4, 7, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = "#133";
-  ctx.beginPath(); ctx.arc(-12, -4, 3.6, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc( 12, -4, 3.6, 0, Math.PI*2); ctx.fill();
-  ctx.strokeStyle = "#133"; ctx.lineWidth = 3; ctx.lineCap = "round";
-  ctx.beginPath(); ctx.arc(0, 8, 12, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
-  ctx.restore();
-}
-
-function render(){
-  ctx.clearRect(0, 0, W, H);
-
-  if (state === STATE.TITLE){
-    ctx.fillStyle = "#0b1020"; ctx.fillRect(0, 0, W, H);
-    drawTitleArt();
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#9fe6ff"; ctx.font = "bold 58px system-ui";
-    ctx.fillText("ICE CUBE RUN", W/2, 230);
-    ctx.fillStyle = "#e9f3ff"; ctx.font = "20px system-ui";
-    ctx.fillText("You're melting. Get to the freezer.", W/2, 272);
-    ctx.fillStyle = "#9fb3d8"; ctx.font = "15px system-ui";
-    ctx.fillText("WASD or Arrow keys to move     R to restart a level", W/2, 340);
-    ctx.fillText("Sun melts you fast. Shade stops the melting. Snowflakes grow you back.", W/2, 368);
-    ctx.fillText("Smaller means faster - and sometimes small is the only way through.", W/2, 394);
-    ctx.fillStyle = "#ffe27a"; ctx.font = "bold 22px system-ui";
-    ctx.fillText("Press Enter to start", W/2, 470);
-    return;
-  }
-
-  drawArena();
-  drawFreezer();
-  drawFlakes();
-  drawDrips();
-  if (player && player.size > 0) drawCube();
-  else if (player){                                  // melted puddle
-    ctx.fillStyle = "rgba(110,185,255,0.8)";
-    ctx.beginPath(); ctx.ellipse(player.x, player.y + 6, 22, 8, 0, 0, Math.PI*2); ctx.fill();
-  }
-  drawTips();
-  drawHUD();
-
-  if (state === STATE.DEAD){
-    overlay([
-      {text:"You melted!", size:52, bold:true, color:"#ff8080", gap:20},
-      {text:"Find shade, grab snowflakes, and don't linger in the sun.", size:17, color:"#c8d8f5", gap:30},
-      {text:"Press Enter or R to retry level " + (levelIndex + 1), size:22, bold:true, color:"#ffe27a"}
-    ]);
+});
+function renderScreen(){
+  const el = $("screen");
+  const key = state + ":" + levelIndex + ":" + Math.floor(totalTime) + ":" + menuPage + ":" + JSON.stringify(settings);
+  if (key === lastScreen) return; lastScreen = key;
+  let html = "";
+  if (!hasThree){
+    html = '<div><h1 class="red">Could not load three.js</h1><p>This game loads one library from the internet.<br>Connect and reload the page.</p></div>';
+  } else if (state === STATE.TITLE && menuPage === "main"){
+    html = '<div><h1 class="title">ICE CUBE RUN</h1><p class="sub">You\'re melting. Get to the freezer.</p>' +
+      '<div class="menu">' +
+      '<button class="btn sel" onclick="menu(\'play\')">\u25b6 &nbsp;Play <span class="val">Enter</span></button>' +
+      '<button class="btn" onclick="menu(\'help\')">? &nbsp;How to play <span class="val">H</span></button>' +
+      '<button class="btn" onclick="menu(\'settings\')">\u2699 &nbsp;Settings <span class="val">S</span></button>' +
+      '</div><p class="hint">WASD / Arrow keys move &nbsp;&middot;&nbsp; R restarts a level &nbsp;&middot;&nbsp; click or use the keys</p></div>';
+  } else if (state === STATE.TITLE && menuPage === "settings"){
+    html = '<div><h1>Settings</h1><div class="menu">' +
+      '<button class="btn" onclick="menu(\'diff\')">1 &nbsp;Melt speed <span class="val">' + DIFFS[settings.diff].name + '</span></button>' +
+      '<button class="btn" onclick="menu(\'shake\')">2 &nbsp;Screen shake <span class="val">' + (settings.shake ? "On" : "Off") + '</span></button>' +
+      '<button class="btn" onclick="menu(\'cam\')">3 &nbsp;Camera <span class="val">' + (settings.camFar ? "Far" : "Close") + '</span></button>' +
+      '<button class="btn" onclick="menu(\'back\')">\u2190 &nbsp;Back <span class="val">Esc</span></button>' +
+      '</div><p class="hint">Chill = 30% slower melting. Spicy = 40% faster. Saved on this computer.</p></div>';
+  } else if (state === STATE.TITLE && menuPage === "help"){
+    html = '<div><h1>How to play</h1>' +
+      '<p>Your <b>size is your health</b>. It shrinks every second. Hit 0 and you\'re a puddle.<br>' +
+      'Smaller is faster, and some slots only fit a small cube - so sometimes you melt <i>on purpose</i>.</p>' +
+      '<div class="legend">' +
+      '<span class="sw" style="background:#ffd966"></span><span>\u2600 <b>Sun</b> - melts you fast (look for the sun orb)</span>' +
+      '<span class="sw" style="background:#ff4a3a"></span><span>\u2668 <b>Hot tile</b> - melts you even faster</span>' +
+      '<span class="sw" style="background:#0b1a38;border:1px solid #39507e"></span><span>\u263d <b>Shade</b> - melting stops. Dogs won\'t go in.</span>' +
+      '<span class="sw" style="background:#fff"></span><span>\u2744 <b>Snowflake</b> - grow back +' + FLAKE_GAIN + '</span>' +
+      '<span class="sw" style="background:#b8773a"></span><span><b>Dog</b> - licks you (\u2212' + LICK_COST + '). Small cubes outrun it.</span>' +
+      '<span class="sw" style="background:#f4f6fa"></span><span><b>Seagull</b> - marks you with a shadow, then dives (\u2212' + GULL_COST + ')</span>' +
+      '<span class="sw" style="background:#cfe9ff;box-shadow:0 0 8px #7fdfff"></span><span>\u2744 <b>Freezer</b> - the goal</span>' +
+      '</div><div class="menu"><button class="btn" onclick="menu(\'back\')">\u2190 &nbsp;Back <span class="val">Esc / Enter</span></button></div></div>';
+  } else if (state === STATE.DEAD){
+    html = '<div><h1 class="red">You melted!</h1><p>Find shade, grab snowflakes, and keep moving.</p>' +
+      '<p class="go">Press Enter or R to retry level ' + (levelIndex + 1) + '</p></div>';
   } else if (state === STATE.LEVELEND){
-    overlay([
-      {text:"LEVEL " + (levelIndex + 1) + " COMPLETE", size:48, bold:true, color:"#9fe6ff", gap:22},
-      {text:"Level time: " + fmtTime(levelTime), size:20, gap:10},
-      {text:"Total so far: " + fmtTime(totalTime), size:20, color:"#c8d8f5", gap:34},
-      {text:"Press Enter for level " + (levelIndex + 2), size:22, bold:true, color:"#ffe27a"}
-    ]);
+    html = '<div><h1>LEVEL ' + (levelIndex + 1) + ' COMPLETE</h1><p>Level time: ' + fmtTime(levelTime) +
+      '</p><p>Total so far: ' + fmtTime(totalTime) + '</p><p class="go">Press Enter for level ' + (levelIndex + 2) + '</p></div>';
   } else if (state === STATE.WIN){
-    overlay([
-      {text:"You made it! Stay frosty.", size:48, bold:true, color:"#9fe6ff", gap:26},
-      {text:"Total time: " + fmtTime(totalTime), size:26, color:"#ffffff", gap:34},
-      {text:"Press Enter to play again", size:22, bold:true, color:"#ffe27a"}
-    ]);
+    html = '<div><h1>You made it! Stay frosty.</h1><p style="font-size:26px;color:#fff">Total time: ' + fmtTime(totalTime) +
+      '</p><p>Melted ' + deaths + ' time' + (deaths === 1 ? '' : 's') + ' along the way.</p>' +
+      '<p class="go">Press Enter to play again</p></div>';
   }
+  el.innerHTML = html;
+  el.style.display = html ? "flex" : "none";
 }
 
-/* --------------------------------------------------------- 9. MAIN LOOP */
+/* ----------------------------------------------------------- 10. LOOP */
 let last = performance.now();
 function frame(now){
-  let dt = (now - last) / 1000;
-  last = now;
-  if (dt > 0.05) dt = 0.05;            // keep physics sane after a tab stall
+  let dt = (now - last) / 1000; last = now;
+  if (dt > 0.05) dt = 0.05;
   handleScreenKeys();
   update(dt);
-  render();
+  render3D(dt);
+  renderHUD();
+  renderScreen();
   requestAnimationFrame(frame);
 }
-loadLevel(0);          // build level 1 up front so the HUD has data
-state = STATE.TITLE;
+if (hasThree){ initThree(); loadLevel(0); state = STATE.TITLE; }
 requestAnimationFrame(frame);
 </script>
 </body>
