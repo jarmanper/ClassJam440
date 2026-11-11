@@ -23,6 +23,24 @@
   #screen p{font-size:18px;margin:8px 0;color:#c8d8f5;}
   #screen .go{color:#ffe27a;font-weight:700;font-size:22px;margin-top:26px;}
   #screen .red{color:#ff8080;}
+  #screen .title{font-size:72px;letter-spacing:2px;margin:0;
+    background:linear-gradient(180deg,#ffffff 0%,#9fe6ff 55%,#3f9fe0 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    text-shadow:0 0 30px rgba(120,200,255,0.35);}
+  #screen .sub{font-size:22px;color:#fff;margin:6px 0 24px;}
+  .menu{display:flex;flex-direction:column;gap:10px;align-items:center;margin-top:18px;}
+  .btn{min-width:300px;padding:12px 22px;border-radius:10px;border:2px solid #39507e;background:#17223c;
+       color:#e9f3ff;font-size:18px;font-weight:700;cursor:pointer;font-family:inherit;}
+  .btn:hover,.btn.sel{border-color:#ffe27a;color:#ffe27a;background:#1d2b4d;}
+  .btn .val{float:right;color:#9fe6ff;}
+  .legend{display:inline-grid;grid-template-columns:34px auto;gap:10px 14px;text-align:left;
+          font-size:17px;align-items:center;margin-top:10px;}
+  .sw{width:30px;height:22px;border-radius:5px;display:inline-block;}
+  .hint{color:#7a8cb0;font-size:13px;margin-top:22px;}
+  #callout{position:fixed;left:50%;top:70px;transform:translateX(-50%);padding:10px 22px;border-radius:12px;
+           font-size:24px;font-weight:800;pointer-events:none;z-index:6;opacity:0;transition:opacity .15s;
+           background:rgba(8,12,28,0.8);border:2px solid currentColor;text-shadow:0 2px 6px #000;}
+  #hud.melting #bar{box-shadow:0 0 14px #ff5a3a;border-color:#ff5a3a;}
 </style>
 </head>
 <body>
@@ -35,6 +53,7 @@
   <span class="dim">WASD / Arrows move &nbsp;-&nbsp; R restarts level</span>
 </div>
 <div id="tip"></div>
+<div id="callout"></div>
 <div id="screen"></div>
 
 <!-- three.js is the only library, linked by URL as the jam rules allow -->
@@ -60,6 +79,12 @@
      9. HUD / screens
     10. Main loop
    ========================================================================= */
+
+/* --------------------------------------------------------- 0. SETTINGS */
+const DIFFS = [{name:"Chill", mult:0.7}, {name:"Normal", mult:1.0}, {name:"Spicy", mult:1.4}];
+let settings = {diff:1, shake:true, camFar:false};
+try { Object.assign(settings, JSON.parse(localStorage.getItem("icecube3d") || "{}")); } catch(e){}
+function saveSettings(){ try { localStorage.setItem("icecube3d", JSON.stringify(settings)); } catch(e){} }
 
 /* ---------------------------------------------------------- 1. BALANCE */
 const W = 960, H = 600;         // logical arena in px
@@ -250,6 +275,7 @@ let beamT = 0, worldTime = 0, shakeT = 0;
 function loadLevel(i){
   levelIndex = i; level = LEVELS[i];
   flakes = level.flakes.map(f => ({x:f.x, y:f.y, taken:false}));
+  lastZone = "open"; calloutT = 0;
   player = {x:level.start.x, y:level.start.y, size:MAX_SIZE, half:pxFor(MAX_SIZE)/2,
             inSun:false, inShade:false, moving:false, dripTimer:0, hurtT:0, kbx:0, kby:0};
   dogs = level.dogs.map(d => ({x:d.x, y:d.y, half:DOG_HALF, path:d.path, wp:0,
@@ -295,7 +321,7 @@ function updateDogs(dt){
       setSize(p, p.size - LICK_COST, walls);
       const kx = (p.x - d.x) / (dist || 1), ky = (p.y - d.y) / (dist || 1);
       p.kbx = kx * 260; p.kby = ky * 260;        // shove, decays in update()
-      p.hurtT = 0.4; shakeT = 0.25;
+      p.hurtT = 0.4; shakeT = 0.25; callout("\ud83d\udc36 LICKED!  \u2212" + LICK_COST, "#ff9a7a");
       d.lickCd = 1.2; d.state = "pause"; d.t = 1.4;
       for (let i = 0; i < 12; i++) spawnDrip(p.x, p.y, false);
     }
@@ -319,6 +345,7 @@ function updateGull(dt){
     if (g.t <= 0){
       if (Math.hypot(p.x - g.tx, p.y - g.ty) < GULL_HIT_R + p.half * 0.5){
         setSize(p, p.size - GULL_COST, level.walls); p.hurtT = 0.4; shakeT = 0.3;
+        callout("\ud83d\udc26 PECKED!  \u2212" + GULL_COST, "#ff9a7a");
         for (let i = 0; i < 12; i++) spawnDrip(p.x, p.y, false);
       }
       g.phase = "climb"; g.t = 1.2;
@@ -326,6 +353,22 @@ function updateGull(dt){
   } else { // climb
     g.h = Math.min(1, g.h + dt / 1.2);
     if (g.t <= 0){ g.phase = "circle"; g.t = 5 + Math.random() * 3; }
+  }
+}
+
+/* ------------------------------------------------- 6b. CALLOUTS (HUD) */
+let calloutT = 0, lastZone = "open";
+function callout(text, color){
+  const el = document.getElementById("callout");
+  el.textContent = text; el.style.color = color; el.style.opacity = 1; calloutT = 1.4;
+}
+function zoneCallouts(p, rate){
+  const zone = p.inShade ? "shade" : rate >= DRAIN_HOT ? "hot" : rate >= DRAIN_SUN ? "sun" : "open";
+  if (zone !== lastZone){
+    if (zone === "sun")   callout("\u2600 SUN  \u2014  MELTING FAST!", "#ffd34d");
+    if (zone === "hot")   callout("\ud83d\udd25 HOT TILE  \u2014  GET OFF!", "#ff6a4a");
+    if (zone === "shade") callout("\u26f1 SHADE  \u2014  safe, melting stopped", "#8fd0ff");
+    lastZone = zone;
   }
 }
 
@@ -351,12 +394,13 @@ function update(dt){
   p.inShade = level.shade.some(r => pointIn(p.x, p.y, r));
   const rate = drainAt(level, p.x, p.y, beamT);
   p.inSun = !p.inShade && rate >= DRAIN_SUN;
-  if (rate) setSize(p, p.size - rate * dt, walls);
+  zoneCallouts(p, rate);
+  if (rate) setSize(p, p.size - rate * DIFFS[settings.diff].mult * dt, walls);
 
   for (const f of flakes){
     if (f.taken) continue;
     if (Math.hypot(f.x - p.x, f.y - p.y) < p.half + 12 && setSize(p, p.size + FLAKE_GAIN, walls)){
-      f.taken = true;
+      f.taken = true; callout("\u2744 +" + FLAKE_GAIN + " SIZE", "#ffffff");
       for (let i = 0; i < 10; i++) spawnDrip(f.x, f.y, true);
     }
   }
@@ -382,7 +426,7 @@ function handleScreenKeys(){
   }
   if (!confirmPressed) return;
   confirmPressed = false;
-  if      (state === STATE.TITLE)    startGame();
+  if      (state === STATE.TITLE){ if (menuPage === "main") startGame(); else menu("back"); }
   else if (state === STATE.DEAD)     loadLevel(levelIndex);
   else if (state === STATE.LEVELEND) loadLevel(levelIndex + 1);
   else if (state === STATE.WIN)      startGame();
@@ -392,6 +436,7 @@ function handleScreenKeys(){
 const hasThree = typeof THREE !== "undefined";
 let renderer, scene, camera, levelGroup, sunLight;
 let cubeMesh, cubeMat, eyeL, eyeR, browL, browR, mouthMesh, sweat = [], puddle;
+let sunOrbs = [];
 let flakeMeshes = [], beamMeshes = [], dogMeshes = [], gullMesh = null, gullShadow = null, slotMeshes = [];
 const drips = [];          // {mesh, vx, vy, vz, life, max}
 const dripPool = [];
@@ -485,6 +530,21 @@ function makeDogMesh(){
   for (const ez of [-0.18, 0.18]){ const e = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), eyeM); e.position.set(1.12, 1.05, ez); g.add(e); }
   return g;
 }
+function makeSunOrb(){
+  const g = new THREE.Group();
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.75, 20, 20),
+      new THREE.MeshStandardMaterial({color:0xffe27a, emissive:0xffb800, emissiveIntensity:1.2}));
+  g.add(orb);
+  const rayMat = new THREE.MeshBasicMaterial({color:0xffd34d});
+  for (let i = 0; i < 8; i++){
+    const ray = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.12, 0.12), rayMat);
+    const a = i / 8 * Math.PI * 2;
+    ray.position.set(Math.cos(a) * 1.35, Math.sin(a) * 1.35, 0); ray.rotation.z = a; g.add(ray);
+  }
+  const light = new THREE.PointLight(0xffcc55, 1.1, 10); g.add(light);
+  g.userData.orb = orb;
+  return g;
+}
 function makeGullMesh(){
   const g = new THREE.Group();
   const bodyM = box(0.9, 0.35, 0.4, 0xf4f6fa); bodyM.castShadow = true; g.add(bodyM);
@@ -500,7 +560,7 @@ function buildScene(){
   if (!hasThree) return;
   if (levelGroup) scene.remove(levelGroup);
   levelGroup = new THREE.Group(); scene.add(levelGroup);
-  flakeMeshes = []; beamMeshes = []; dogMeshes = []; slotMeshes = [];
+  flakeMeshes = []; beamMeshes = []; dogMeshes = []; slotMeshes = []; sunOrbs = [];
   gullMesh = null; gullShadow = null;
 
   // floor
@@ -525,6 +585,7 @@ function buildScene(){
     levelGroup.add(floorPatch(r, 0xffd966, 0xffb830, 1));
     const col = box(r.w / U, 5, r.h / U, 0xffe27a, {transparent:true, opacity:0.10, emissive:0xffcc55, depthWrite:false});
     col.position.set(X(r.x + r.w/2), 2.5, Z(r.y + r.h/2)); levelGroup.add(col);
+    const orb = makeSunOrb(); orb.position.set(X(r.x + r.w/2), 6.2, Z(r.y + r.h/2)); levelGroup.add(orb); sunOrbs.push(orb);
   }
   for (const r of level.hot){
     const m = floorPatch(r, 0xff4a3a, 0xff2200, 1); m.userData.hot = true; levelGroup.add(m);
@@ -537,6 +598,7 @@ function buildScene(){
     col.position.y = 2.5; g.add(col);
     g.children[0].position.set(0, 0.03, 0);
     g.position.set(X(r.x + r.w/2), 0, Z(r.y + r.h/2));
+    const orb = makeSunOrb(); orb.position.y = 6.2; g.add(orb); sunOrbs.push(orb);
     levelGroup.add(g); beamMeshes.push(g);
   }
 
@@ -641,6 +703,7 @@ function render3D(dt){
   }
   const br = beamRectsAt(level, beamT);
   for (let i = 0; i < beamMeshes.length; i++) beamMeshes[i].position.x = X(br[i].x + br[i].w / 2);
+  for (const o of sunOrbs){ o.rotation.z += dt * 0.8; o.quaternion.copy(camera.quaternion); o.userData.orb.scale.setScalar(1 + 0.08 * Math.sin(worldTime * 5)); }
   const pulse = 0.4 + 0.3 * Math.sin(worldTime * 4);
   for (const m of slotMeshes) m.material.opacity = pulse + 0.3;
   for (const c of levelGroup.children) if (c.userData.hot) c.material.emissiveIntensity = 0.7 + 0.4 * Math.sin(worldTime * 6);
@@ -674,8 +737,9 @@ function render3D(dt){
 
   // --- camera: angled overhead, follows the cube, little shake when hurt ---
   const tx = X(p.x), tz = Z(p.y);
-  const want = new THREE.Vector3(tx, 20, tz + 14);
+  const want = settings.camFar ? new THREE.Vector3(tx, 26, tz + 18) : new THREE.Vector3(tx, 20, tz + 14);
   camera.position.lerp(want, 1 - Math.pow(0.001, dt));
+  if (shakeT > 0 && !settings.shake) shakeT = 0;
   if (shakeT > 0){ shakeT -= dt; camera.position.x += (Math.random()-0.5) * 0.3; camera.position.z += (Math.random()-0.5) * 0.3; }
   camera.lookAt(tx, 0.5, tz);
   renderer.render(scene, camera);
@@ -693,21 +757,65 @@ function renderHUD(){
   $("time").textContent = "TIME " + fmtTime(levelTime);
   $("deaths").textContent = "MELTS " + deaths;
   $("tip").innerHTML = level ? level.tips.join("<br>") : "";
+  $("hud").className = (player && player.size > 0 && state === STATE.PLAY && !player.inShade &&
+                        drainAt(level, player.x, player.y, beamT) >= DRAIN_SUN) ? "melting" : "";
+  if (calloutT > 0){ calloutT -= 1/60; if (calloutT <= 0) $("callout").style.opacity = 0; }
 }
-let lastScreen = null;
+let lastScreen = null, menuPage = "main";
+function menu(action){                         // called by the buttons (onclick) and by keys
+  if (action === "play"){ menuPage = "main"; startGame(); }
+  else if (action === "settings") menuPage = "settings";
+  else if (action === "help") menuPage = "help";
+  else if (action === "back") menuPage = "main";
+  else if (action === "diff"){ settings.diff = (settings.diff + 1) % DIFFS.length; saveSettings(); }
+  else if (action === "shake"){ settings.shake = !settings.shake; saveSettings(); }
+  else if (action === "cam"){ settings.camFar = !settings.camFar; saveSettings(); }
+  lastScreen = null;
+}
+window.menu = menu;
+addEventListener("keydown", e => {
+  if (state !== STATE.TITLE) return;
+  if (e.code === "KeyS" && menuPage === "main") menu("settings");
+  if (e.code === "KeyH" && menuPage === "main") menu("help");
+  if (e.code === "Escape" || e.code === "Backspace") menu("back");
+  if (menuPage === "settings"){
+    if (e.code === "Digit1") menu("diff"); if (e.code === "Digit2") menu("shake"); if (e.code === "Digit3") menu("cam");
+  }
+});
 function renderScreen(){
   const el = $("screen");
-  const key = state + ":" + levelIndex + ":" + Math.floor(totalTime);
+  const key = state + ":" + levelIndex + ":" + Math.floor(totalTime) + ":" + menuPage + ":" + JSON.stringify(settings);
   if (key === lastScreen) return; lastScreen = key;
   let html = "";
   if (!hasThree){
     html = '<div><h1 class="red">Could not load three.js</h1><p>This game loads one library from the internet.<br>Connect and reload the page.</p></div>';
-  } else if (state === STATE.TITLE){
-    html = '<div><h1>ICE CUBE RUN 3D</h1><p style="font-size:22px;color:#fff">You\'re melting. Get to the freezer.</p>' +
-      '<p>WASD or Arrow keys to move &nbsp;&middot;&nbsp; R restarts a level</p>' +
-      '<p>Sun melts you fast. Shade stops it. Snowflakes grow you back.<br>Smaller is faster - and sometimes small is the only way through.</p>' +
-      '<p>Watch out for hot tiles, a dog that wants a lick, and a hungry seagull.</p>' +
-      '<p class="go">Press Enter to start</p></div>';
+  } else if (state === STATE.TITLE && menuPage === "main"){
+    html = '<div><h1 class="title">ICE CUBE RUN</h1><p class="sub">You\'re melting. Get to the freezer.</p>' +
+      '<div class="menu">' +
+      '<button class="btn sel" onclick="menu(\'play\')">\u25b6 &nbsp;Play <span class="val">Enter</span></button>' +
+      '<button class="btn" onclick="menu(\'help\')">? &nbsp;How to play <span class="val">H</span></button>' +
+      '<button class="btn" onclick="menu(\'settings\')">\u2699 &nbsp;Settings <span class="val">S</span></button>' +
+      '</div><p class="hint">WASD / Arrow keys move &nbsp;&middot;&nbsp; R restarts a level &nbsp;&middot;&nbsp; click or use the keys</p></div>';
+  } else if (state === STATE.TITLE && menuPage === "settings"){
+    html = '<div><h1>Settings</h1><div class="menu">' +
+      '<button class="btn" onclick="menu(\'diff\')">1 &nbsp;Melt speed <span class="val">' + DIFFS[settings.diff].name + '</span></button>' +
+      '<button class="btn" onclick="menu(\'shake\')">2 &nbsp;Screen shake <span class="val">' + (settings.shake ? "On" : "Off") + '</span></button>' +
+      '<button class="btn" onclick="menu(\'cam\')">3 &nbsp;Camera <span class="val">' + (settings.camFar ? "Far" : "Close") + '</span></button>' +
+      '<button class="btn" onclick="menu(\'back\')">\u2190 &nbsp;Back <span class="val">Esc</span></button>' +
+      '</div><p class="hint">Chill = 30% slower melting. Spicy = 40% faster. Saved on this computer.</p></div>';
+  } else if (state === STATE.TITLE && menuPage === "help"){
+    html = '<div><h1>How to play</h1>' +
+      '<p>Your <b>size is your health</b>. It shrinks every second. Hit 0 and you\'re a puddle.<br>' +
+      'Smaller is faster, and some slots only fit a small cube - so sometimes you melt <i>on purpose</i>.</p>' +
+      '<div class="legend">' +
+      '<span class="sw" style="background:#ffd966"></span><span>\u2600 <b>Sun</b> - melts you fast (look for the sun orb)</span>' +
+      '<span class="sw" style="background:#ff4a3a"></span><span>\ud83d\udd25 <b>Hot tile</b> - melts you even faster</span>' +
+      '<span class="sw" style="background:#0b1a38;border:1px solid #39507e"></span><span>\u26f1 <b>Shade</b> - melting stops. Dogs won\'t go in.</span>' +
+      '<span class="sw" style="background:#fff"></span><span>\u2744 <b>Snowflake</b> - grow back +' + FLAKE_GAIN + '</span>' +
+      '<span class="sw" style="background:#b8773a"></span><span>\ud83d\udc36 <b>Dog</b> - licks you (\u2212' + LICK_COST + '). Small cubes outrun it.</span>' +
+      '<span class="sw" style="background:#f4f6fa"></span><span>\ud83d\udc26 <b>Seagull</b> - marks you with a shadow, then dives (\u2212' + GULL_COST + ')</span>' +
+      '<span class="sw" style="background:#cfe9ff;box-shadow:0 0 8px #7fdfff"></span><span>\u2744 <b>Freezer</b> - the goal</span>' +
+      '</div><div class="menu"><button class="btn" onclick="menu(\'back\')">\u2190 &nbsp;Back <span class="val">Esc / Enter</span></button></div></div>';
   } else if (state === STATE.DEAD){
     html = '<div><h1 class="red">You melted!</h1><p>Find shade, grab snowflakes, and keep moving.</p>' +
       '<p class="go">Press Enter or R to retry level ' + (levelIndex + 1) + '</p></div>';
