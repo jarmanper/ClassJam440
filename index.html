@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ice Cube Run</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1020;display:flex;align-items:center;
+            justify-content:center;font-family:system-ui,Segoe UI,Arial,sans-serif;}
+  canvas{display:block;border-radius:10px;box-shadow:0 0 40px #000a;}
+</style>
+</head>
+<body>
+<canvas id="game" width="960" height="600"></canvas>
+<script>
+"use strict";
+/* =========================================================================
+   ICE CUBE RUN  -  theme: SHRINKING
+   One file, vanilla JS + Canvas. All art drawn in code.
+
+   SECTIONS
+     1. Constants & math helpers
+     2. Level data (3 hand-made levels)
+     3. Input
+     4. Game state
+     5. Collision & movement (AABB + corner correction)
+     6. Update loop
+     7. Particles
+     8. Rendering (world, cube, HUD, screens)
+     9. Main loop
+   ========================================================================= */
+
+/* ---------------------------------------------------------------- 1. CONST */
+const canvas = document.getElementById("game");
+const ctx    = canvas.getContext("2d");
+const W = 960, H = 600;
+const PLAY_TOP = 56;          // HUD band height; the arena starts below it
+
+const MAX_SIZE = 100;         // size IS health
+const MIN_PX   = 12;          // drawn width when nearly melted
+const MAX_PX   = 48;          // drawn width at full size
+
+const DRAIN_BASE = 1;         // size lost per second in the open
+const DRAIN_SUN  = 8;         // size lost per second in sunlight
+const FLAKE_GAIN = 15;        // size gained per snowflake
+
+// size -> drawn pixel width
+function pxFor(size){ return MIN_PX + (size / MAX_SIZE) * (MAX_PX - MIN_PX); }
+// size -> movement speed (smaller cube = faster cube)
+function speedFor(size){ return 300 - size * 1.6; }
+
+function clamp(v,a,b){ return v < a ? a : v > b ? b : v; }
+function aabb(ax,ay,aw,ah, bx,by,bw,bh){
+  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+}
+function pointIn(px,py,r){
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+function fmtTime(s){
+  const m = Math.floor(s/60), r = s - m*60;
+  return m + ":" + (r < 10 ? "0" : "") + r.toFixed(1);
+}
+
+/* ---------------------------------------------------------- 2. LEVEL DATA */
+// Arena interior is x 20..940, y 76..580 once the border walls are in.
+function border(){
+  return [
+    {x:0,        y:PLAY_TOP, w:W,  h:20},            // top
+    {x:0,        y:H-20,     w:W,  h:20},            // bottom
+    {x:0,        y:PLAY_TOP, w:20, h:H-PLAY_TOP},    // left
+    {x:W-20,     y:PLAY_TOP, w:20, h:H-PLAY_TOP}     // right
+  ];
+}
+
+const LEVELS = [
+  /* --- LEVEL 1: tutorial. One S-shaped path, one sun, one shade, 2 flakes.
+         No gaps: the only job is to learn what melts you. -------------- */
+  {
+    tips: ["Yellow SUN melts you fast. Dark SHADE stops the melting.",
+           "Grab snowflakes to grow back. Reach the freezer!"],
+    start: {x:70, y:140},
+    freezer: {x:845, y:478, w:72, h:76},
+    walls: border().concat([
+      {x:20,  y:204, w:820, h:60},   // divider 1 - opening on the RIGHT
+      {x:140, y:392, w:820, h:60}    // divider 2 - opening on the LEFT
+    ]),
+    sun:   [{x:420, y:76,  w:160, h:128}],
+    shade: [{x:560, y:264, w:160, h:128}],
+    beams: [],
+    flakes:[{x:300, y:328}, {x:420, y:516}]
+  },
+
+  /* --- LEVEL 2: the gap. Freezer is behind a wall with a 26px slot, so the
+         cube has to melt on purpose, squeeze through, then refill. ----- */
+  {
+    tips: ["Too big? Melt a little.",
+           "Shrink in the sun until you fit the slot, then refill on the far side."],
+    start: {x:70, y:150},
+    freezer: {x:845, y:250, w:72, h:76},
+    walls: border().concat([
+      {x:600, y:76,  w:25, h:224},   // gap wall, upper half
+      {x:600, y:326, w:25, h:254},   // gap wall, lower half  -> gap y300..326 (26px)
+      {x:180, y:76,  w:24, h:340},   // baffle 1 - go under
+      {x:340, y:260, w:24, h:320},   // baffle 2 - go over
+      {x:470, y:76,  w:24, h:300}    // baffle 3 - go under
+    ]),
+    sun:   [{x:500, y:76,  w:95, h:504}],            // the melting lane
+    shade: [{x:400, y:400, w:66, h:170},             // top up before the sun
+            {x:630, y:280, w:70, h:70}],             // safe landing past the gap
+    beams: [],
+    flakes:[{x:260, y:500}, {x:420, y:200},
+            {x:700, y:420}, {x:780, y:230}, {x:870, y:500}]
+  },
+
+  /* --- LEVEL 3: finale. Sun corridor, two gaps of different widths
+         (34px then 24px) and two sun beams sweeping out of phase. ------ */
+  {
+    tips: ["Two slots, two different sizes. The beams sweep - there is a safe lane between them.",
+           "Melt to fit, then eat snowflakes to survive the run home."],
+    start: {x:70, y:500},
+    freezer: {x:850, y:90, w:72, h:76},
+    walls: border().concat([
+      {x:360, y:76,  w:24, h:104},   // wall A upper
+      {x:360, y:214, w:24, h:366},   // wall A lower -> gap y180..214 (34px)
+      {x:680, y:76,  w:24, h:342},   // wall B upper
+      {x:680, y:442, w:24, h:138}    // wall B lower -> gap y418..442 (24px)
+    ]),
+    sun:   [{x:250, y:76,  w:100, h:504},            // shrink for gap 1
+            {x:596, y:430, w:80,  h:150}],           // shrink for gap 2
+    shade: [{x:50,  y:300, w:90,  h:110},
+            {x:610, y:240, w:64,  h:70},
+            {x:712, y:400, w:80,  h:80}],            // safe landing past gap 2
+    beams: [ {x0:400, x1:590, y:76,  w:56, h:230, speed:0.9, phase:0},
+             {x0:400, x1:590, y:346, w:56, h:234, speed:0.9, phase:Math.PI} ],
+    flakes:[{x:150, y:480}, {x:120, y:180},
+            {x:420, y:120}, {x:470, y:540}, {x:620, y:180},
+            {x:780, y:330}, {x:800, y:170}, {x:860, y:480}]
+  }
+];
+
+/* -------------------------------------------------------------- 3. INPUT */
+const keys = Object.create(null);
+let confirmPressed = false, restartPressed = false;
+const BLOCK = {ArrowUp:1,ArrowDown:1,ArrowLeft:1,ArrowRight:1,Space:1};
+
+addEventListener("keydown", e => {
+  if (BLOCK[e.code]) e.preventDefault();
+  if (!keys[e.code]) {                       // edge-triggered actions
+    if (e.code === "Enter" || e.code === "Space") confirmPressed = true;
+    if (e.code === "KeyR") restartPressed = true;
+  }
+  keys[e.code] = true;
+});
+addEventListener("keyup", e => { keys[e.code] = false; });
+
+function axisInput(){
+  let dx = 0, dy = 0;
+  if (keys.KeyA || keys.ArrowLeft)  dx -= 1;
+  if (keys.KeyD || keys.ArrowRight) dx += 1;
+  if (keys.KeyW || keys.ArrowUp)    dy -= 1;
+  if (keys.KeyS || keys.ArrowDown)  dy += 1;
+  if (dx && dy) { const k = Math.SQRT1_2; dx *= k; dy *= k; }   // 8-directional
+  return {dx, dy};
+}
+
+/* --------------------------------------------------------- 4. GAME STATE */
+const STATE = {TITLE:"title", PLAY:"play", DEAD:"dead", LEVELEND:"levelend", WIN:"win"};
+let state = STATE.TITLE;
+let levelIndex = 0;
+let level = null;        // active level data
+let flakes = [];         // runtime copy with "taken" flags
+let drips = [];          // water particles
+let player = null;
+let levelTime = 0, bankedTime = 0, totalTime = 0;
+let beamT = 0;           // clock for the sweeping beams
+let worldTime = 0;       // clock for idle animation
+
+// Find the narrow slots (two walls in the same column with a short gap between
+// them) so we can highlight them - they are the whole point of the game.
+function findSlots(lv){
+  const out = [];
+  for (const a of lv.walls) for (const b of lv.walls){
+    if (a === b || a.x !== b.x || a.w !== b.w) continue;
+    const gap = b.y - (a.y + a.h);
+    if (gap > 0 && gap < 70) out.push({x:a.x, w:a.w, y:a.y + a.h, h:gap});
+  }
+  return out;
+}
+
+LEVELS.forEach(lv => { lv.slots = findSlots(lv); });   // precompute once
+
+function loadLevel(i){
+  levelIndex = i;
+  level  = LEVELS[i];
+  flakes = level.flakes.map(f => ({x:f.x, y:f.y, taken:false}));
+  drips  = [];
+  player = {x: level.start.x, y: level.start.y, size: MAX_SIZE,
+            half: pxFor(MAX_SIZE)/2, inSun:false, inShade:false, moving:false,
+            dripTimer:0};
+  levelTime = 0;
+  beamT = 0;
+  state = STATE.PLAY;
+}
+function startGame(){ bankedTime = 0; totalTime = 0; loadLevel(0); }
+
+/* ------------------------------------------- 5. COLLISION & MOVEMENT */
+function collides(cx, cy, half, walls){
+  const x = cx - half, y = cy - half, s = half * 2;
+  for (let i = 0; i < walls.length; i++){
+    const w = walls[i];
+    if (aabb(x, y, s, s, w.x, w.y, w.w, w.h)) return true;
+  }
+  return false;
+}
+
+// Move on one axis. If blocked, try sliding up to CC px sideways so that a
+// cube small enough for a slot actually gets funneled into it.
+const CC = 12;
+function moveAxis(p, dx, dy, walls){
+  const nx = p.x + dx, ny = p.y + dy;
+  if (!collides(nx, ny, p.half, walls)) { p.x = nx; p.y = ny; return; }
+  for (let d = 1; d <= CC; d++){
+    if (dx !== 0){
+      if (!collides(nx, p.y - d, p.half, walls)) { p.x = nx; p.y -= d; return; }
+      if (!collides(nx, p.y + d, p.half, walls)) { p.x = nx; p.y += d; return; }
+    } else {
+      if (!collides(p.x - d, ny, p.half, walls)) { p.x -= d; p.y = ny; return; }
+      if (!collides(p.x + d, ny, p.half, walls)) { p.x += d; p.y = ny; return; }
+    }
+  }
+}
+
+// Change size. Growing can be refused if the bigger cube would be stuck in
+// a wall; we first try to nudge it out, and only then give up.
+function setSize(p, newSize, walls){
+  newSize = clamp(newSize, 0, MAX_SIZE);
+  const nh = pxFor(newSize) / 2;
+  if (nh > p.half && collides(p.x, p.y, nh, walls)){
+    let ok = false;
+    for (let d = 1; d <= 18 && !ok; d++){
+      const offs = [[d,0],[-d,0],[0,d],[0,-d],[d,d],[-d,d],[d,-d],[-d,-d]];
+      for (const o of offs){
+        if (!collides(p.x + o[0], p.y + o[1], nh, walls)){
+          p.x += o[0]; p.y += o[1]; ok = true; break;
+        }
+      }
+    }
+    if (!ok) return false;
+  }
+  p.size = newSize; p.half = nh; return true;
+}
+
+/* ----------------------------------------------------------- 6. UPDATE */
+function beamRects(){
+  const out = [];
+  for (const b of level.beams){
+    const t = 0.5 + 0.5 * Math.sin(beamT * b.speed + b.phase);
+    out.push({x: b.x0 + (b.x1 - b.x0) * t, y: b.y, w: b.w, h: b.h});
+  }
+  return out;
+}
+
+function update(dt){
+  worldTime += dt;
+  if (state !== STATE.PLAY) return;
+
+  beamT    += dt;
+  levelTime += dt;
+  totalTime = bankedTime + levelTime;
+
+  const p = player, walls = level.walls;
+
+  /* move */
+  const inp = axisInput();
+  p.moving = (inp.dx !== 0 || inp.dy !== 0);
+  const sp = speedFor(p.size) * dt;
+  if (inp.dx) moveAxis(p, inp.dx * sp, 0, walls);
+  if (inp.dy) moveAxis(p, 0, inp.dy * sp, walls);
+
+  /* which zone is the cube standing in? (centre point = forgiving) */
+  const suns = level.sun.concat(beamRects());
+  p.inShade = level.shade.some(r => pointIn(p.x, p.y, r));
+  p.inSun   = !p.inShade && suns.some(r => pointIn(p.x, p.y, r));
+
+  /* melt */
+  let rate = DRAIN_BASE;
+  if (p.inShade) rate = 0;
+  else if (p.inSun) rate = DRAIN_SUN;
+  if (rate) setSize(p, p.size - rate * dt, walls);
+
+  /* snowflakes */
+  for (const f of flakes){
+    if (f.taken) continue;
+    const dx = f.x - p.x, dy = f.y - p.y;
+    if (Math.hypot(dx, dy) < p.half + 12){
+      if (setSize(p, p.size + FLAKE_GAIN, walls)){
+        f.taken = true;
+        for (let i = 0; i < 10; i++) spawnDrip(f.x, f.y, true);
+      }
+    }
+  }
+
+  /* drip trail */
+  p.dripTimer -= dt;
+  if (p.moving && p.dripTimer <= 0){
+    p.dripTimer = 0.07;
+    spawnDrip(p.x + (Math.random()-0.5)*p.half, p.y + p.half*0.6, false);
+  }
+  if (p.inSun && Math.random() < dt * 14) spawnDrip(p.x, p.y, false);
+
+  updateDrips(dt);
+
+  /* melted? */
+  if (p.size <= 0){ state = STATE.DEAD; return; }
+
+  /* reached the freezer? */
+  const f = level.freezer;
+  if (aabb(p.x-p.half, p.y-p.half, p.half*2, p.half*2, f.x, f.y, f.w, f.h)){
+    bankedTime += levelTime;
+    totalTime   = bankedTime;
+    state = (levelIndex >= LEVELS.length - 1) ? STATE.WIN : STATE.LEVELEND;
+  }
+}
+
+function handleScreenKeys(){
+  if (restartPressed){
+    restartPressed = false;
+    if (state === STATE.PLAY || state === STATE.DEAD) loadLevel(levelIndex);
+  }
+  if (!confirmPressed) return;
+  confirmPressed = false;
+  if      (state === STATE.TITLE)    startGame();
+  else if (state === STATE.DEAD)     loadLevel(levelIndex);
+  else if (state === STATE.LEVELEND) loadLevel(levelIndex + 1);
+  else if (state === STATE.WIN)      startGame();
+}
+
+/* -------------------------------------------------------- 7. PARTICLES */
+function spawnDrip(x, y, sparkle){
+  drips.push({x, y, vx:(Math.random()-0.5)*25, vy: 10 + Math.random()*30,
+              r: sparkle ? 2.5 : 1.5 + Math.random()*1.8,
+              life: sparkle ? 0.5 : 0.75, max: sparkle ? 0.5 : 0.75,
+              sparkle: !!sparkle});
+}
+function updateDrips(dt){
+  for (let i = drips.length - 1; i >= 0; i--){
+    const d = drips[i];
+    d.life -= dt;
+    d.x += d.vx * dt; d.y += d.vy * dt; d.vy += 60 * dt;
+    if (d.life <= 0) drips.splice(i, 1);
+  }
+}
+
+/* -------------------------------------------------------- 8. RENDERING */
+function drawRoundRect(x, y, w, h, r){
+  r = Math.min(r, w/2, h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y,   x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x,   y+h, r);
+  ctx.arcTo(x,   y+h, x,   y,   r);
+  ctx.arcTo(x,   y,   x+w, y,   r);
+  ctx.closePath();
+}
+
+function drawArena(){
+  // floor
+  ctx.fillStyle = "#11203a";
+  ctx.fillRect(0, PLAY_TOP, W, H - PLAY_TOP);
+  ctx.strokeStyle = "rgba(255,255,255,0.035)";
+  ctx.lineWidth = 1;
+  for (let x = 20; x < W; x += 40){
+    ctx.beginPath(); ctx.moveTo(x, PLAY_TOP); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = PLAY_TOP; y < H; y += 40){
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // shade patches
+  for (const r of level.shade){
+    ctx.fillStyle = "#0b1a38";
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = "#1d3a6e"; ctx.lineWidth = 2;
+    ctx.strokeRect(r.x+1, r.y+1, r.w-2, r.h-2);
+    ctx.fillStyle = "rgba(150,190,255,0.55)";
+    ctx.font = "bold 11px system-ui"; ctx.textAlign = "center";
+    ctx.fillText("SHADE", r.x + r.w/2, r.y + 16);
+  }
+
+  // sun patches (static + sweeping beams)
+  const suns = level.sun.map(r => ({r, beam:false}))
+              .concat(beamRects().map(r => ({r, beam:true})));
+  for (const s of suns){
+    const r = s.r;
+    const g = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+    g.addColorStop(0, "rgba(255,226,110,0.80)");
+    g.addColorStop(1, "rgba(255,190,60,0.62)");
+    ctx.fillStyle = g;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = s.beam ? "rgba(255,255,255,0.75)" : "rgba(255,240,170,0.9)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(r.x+1, r.y+1, r.w-2, r.h-2);
+    ctx.fillStyle = "rgba(120,80,0,0.55)";
+    ctx.font = "bold 11px system-ui"; ctx.textAlign = "center";
+    ctx.fillText(s.beam ? "BEAM" : "SUN", r.x + r.w/2, r.y + 16);
+  }
+
+  // walls
+  for (const w of level.walls){
+    ctx.fillStyle = "#2b3550";
+    ctx.fillRect(w.x, w.y, w.w, w.h);
+    ctx.fillStyle = "#3d4a6b";
+    ctx.fillRect(w.x, w.y, w.w, Math.min(5, w.h));
+  }
+
+  // slot markers: a pulsing bracket around every narrow gap
+  const pulse = 0.55 + 0.45 * Math.sin(worldTime * 4);
+  for (const g of level.slots){
+    ctx.strokeStyle = "rgba(150,235,255," + (0.45 + 0.45 * pulse) + ")";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(g.x - 7, g.y);       ctx.lineTo(g.x + g.w + 7, g.y);
+    ctx.moveTo(g.x - 7, g.y + g.h); ctx.lineTo(g.x + g.w + 7, g.y + g.h);
+    ctx.stroke();
+    // the cube only fits if it is drawn narrower than this
+    ctx.fillStyle = "rgba(150,235,255,0.18)";
+    ctx.fillRect(g.x, g.y, g.w, g.h);
+  }
+}
+
+function drawFreezer(){
+  const f = level.freezer;
+  const pulse = 0.5 + 0.5 * Math.sin(worldTime * 3);
+  ctx.save();
+  ctx.shadowColor = "rgba(120,220,255," + (0.5 + 0.4*pulse) + ")";
+  ctx.shadowBlur  = 22;
+  ctx.fillStyle = "#cfe9ff";
+  drawRoundRect(f.x, f.y, f.w, f.h, 7); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = "#9fd0f5";
+  ctx.fillRect(f.x + 6, f.y + 10, f.w - 12, f.h - 20);
+  ctx.fillStyle = "#64a9dd";
+  ctx.fillRect(f.x + f.w - 16, f.y + 22, 6, 24);          // handle
+  ctx.fillStyle = "#1b3a5c";
+  ctx.font = "bold 10px system-ui"; ctx.textAlign = "center";
+  ctx.fillText("FREEZER", f.x + f.w/2, f.y + f.h - 6);
+}
+
+function drawFlakes(){
+  for (const f of flakes){
+    if (f.taken) continue;
+    const bob = Math.sin(worldTime * 3 + f.x) * 2;
+    ctx.save();
+    ctx.translate(f.x, f.y + bob);
+    ctx.strokeStyle = "#e8f8ff"; ctx.lineWidth = 2.2; ctx.lineCap = "round";
+    ctx.shadowColor = "#8fdcff"; ctx.shadowBlur = 10;
+    for (let i = 0; i < 3; i++){
+      ctx.rotate(Math.PI / 3);
+      ctx.beginPath(); ctx.moveTo(-9, 0); ctx.lineTo(9, 0); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function drawDrips(){
+  for (const d of drips){
+    const a = Math.max(0, d.life / d.max);
+    ctx.fillStyle = d.sparkle
+      ? "rgba(220,245,255," + a + ")"
+      : "rgba(110,185,255," + (a * 0.8) + ")";
+    ctx.beginPath(); ctx.arc(d.x, d.y, d.r * a + 0.5, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function drawCube(){
+  const p = player, s = p.half * 2;
+  const worried = p.size < 45;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+
+  // body
+  ctx.shadowColor = "rgba(120,200,255,0.75)"; ctx.shadowBlur = 12;
+  ctx.fillStyle = "#b6ecff";
+  drawRoundRect(-p.half, -p.half, s, s, Math.max(3, s*0.18)); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = Math.max(1, s*0.05);
+  drawRoundRect(-p.half, -p.half, s, s, Math.max(3, s*0.18)); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.55)";                 // highlight
+  ctx.fillRect(-p.half + s*0.15, -p.half + s*0.15, s*0.22, s*0.22);
+
+  // face
+  const eyeOff = s * 0.19, eyeR = Math.max(1.4, s * 0.1);
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath(); ctx.arc(-eyeOff, -s*0.06, eyeR, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( eyeOff, -s*0.06, eyeR, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = "#133";
+  const pr = Math.max(0.9, eyeR * 0.55);
+  const look = worried ? Math.sin(worldTime * 9) * eyeR * 0.3 : 0;
+  ctx.beginPath(); ctx.arc(-eyeOff + look, -s*0.06, pr, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( eyeOff + look, -s*0.06, pr, 0, Math.PI*2); ctx.fill();
+
+  ctx.strokeStyle = "#133"; ctx.lineWidth = Math.max(1, s*0.045); ctx.lineCap = "round";
+  if (worried){                                             // worried brows + o-mouth
+    ctx.beginPath();
+    ctx.moveTo(-eyeOff - eyeR, -s*0.26); ctx.lineTo(-eyeOff + eyeR, -s*0.19);
+    ctx.moveTo( eyeOff + eyeR, -s*0.26); ctx.lineTo( eyeOff - eyeR, -s*0.19);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, s*0.18, Math.max(1.2, s*0.08), 0, Math.PI*2); ctx.stroke();
+  } else {                                                  // calm smile
+    ctx.beginPath(); ctx.arc(0, s*0.10, s*0.17, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
+  }
+
+  // sweat drops in the sun
+  if (p.inSun){
+    ctx.fillStyle = "rgba(190,235,255,0.95)";
+    for (let i = 0; i < 3; i++){
+      const t  = (worldTime * 2.2 + i * 0.4) % 1;
+      const sx = (i - 1) * s * 0.42;
+      const sy = -p.half - 4 - t * 10;
+      ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.3, s*0.07) * (1 - t), 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function drawHUD(){
+  ctx.fillStyle = "#0a0f1e";
+  ctx.fillRect(0, 0, W, PLAY_TOP);
+  ctx.fillStyle = "#1c2742";
+  ctx.fillRect(0, PLAY_TOP - 2, W, 2);
+
+  const frac = player ? player.size / MAX_SIZE : 1;
+  ctx.fillStyle = "#cfe0ff";
+  ctx.font = "bold 13px system-ui"; ctx.textAlign = "left";
+  ctx.fillText("SIZE", 20, 33);
+
+  const bx = 62, by = 19, bw = 300, bh = 18;
+  ctx.fillStyle = "#17223c"; drawRoundRect(bx, by, bw, bh, 5); ctx.fill();
+  // blue at full, red when nearly melted
+  const r = Math.round(255 - 185 * frac);
+  const g = Math.round(70  + 100 * frac);
+  const b = Math.round(70  + 185 * frac);
+  ctx.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
+  if (frac > 0) { drawRoundRect(bx, by, Math.max(4, bw * frac), bh, 5); ctx.fill(); }
+  ctx.strokeStyle = "#39507e"; ctx.lineWidth = 1.5;
+  drawRoundRect(bx, by, bw, bh, 5); ctx.stroke();
+  ctx.fillStyle = "#eaf4ff"; ctx.font = "bold 11px system-ui"; ctx.textAlign = "right";
+  ctx.fillText(Math.ceil(player ? player.size : 0), bx + bw - 7, by + 13);
+
+  ctx.textAlign = "left"; ctx.font = "bold 14px system-ui"; ctx.fillStyle = "#cfe0ff";
+  ctx.fillText("LEVEL " + (levelIndex + 1) + " / " + LEVELS.length, 400, 33);
+  ctx.fillText("TIME " + fmtTime(levelTime), 540, 33);
+  ctx.fillStyle = "#7a8cb0"; ctx.font = "12px system-ui";
+  ctx.fillText("WASD / Arrows  -  R restarts level", 690, 33);
+}
+
+function drawTips(){
+  const tips = level.tips;
+  ctx.fillStyle = "rgba(6,10,22,0.82)";
+  ctx.fillRect(0, H - 34, W, 34);
+  ctx.textAlign = "center"; ctx.fillStyle = "#b9ccf0";
+  ctx.font = "12px system-ui";
+  ctx.fillText(tips[0], W/2, H - 20);
+  if (tips[1]) ctx.fillText(tips[1], W/2, H - 6);
+}
+
+function overlay(lines){
+  ctx.fillStyle = "rgba(5,9,20,0.86)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = "center";
+  let y = 150;
+  for (const L of lines){
+    ctx.fillStyle = L.color || "#e9f3ff";
+    ctx.font = (L.bold ? "bold " : "") + (L.size || 18) + "px system-ui";
+    ctx.fillText(L.text, W/2, y);
+    y += (L.size || 18) + (L.gap || 14);
+  }
+}
+
+function drawTitleArt(){
+  // a big friendly cube above the title
+  ctx.save();
+  ctx.translate(W/2, 110 + Math.sin(worldTime*2)*5);
+  ctx.shadowColor = "rgba(120,200,255,0.8)"; ctx.shadowBlur = 25;
+  ctx.fillStyle = "#b6ecff";
+  drawRoundRect(-34, -34, 68, 68, 12); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#fff";
+  ctx.beginPath(); ctx.arc(-12, -4, 7, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 12, -4, 7, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = "#133";
+  ctx.beginPath(); ctx.arc(-12, -4, 3.6, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 12, -4, 3.6, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = "#133"; ctx.lineWidth = 3; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.arc(0, 8, 12, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
+  ctx.restore();
+}
+
+function render(){
+  ctx.clearRect(0, 0, W, H);
+
+  if (state === STATE.TITLE){
+    ctx.fillStyle = "#0b1020"; ctx.fillRect(0, 0, W, H);
+    drawTitleArt();
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#9fe6ff"; ctx.font = "bold 58px system-ui";
+    ctx.fillText("ICE CUBE RUN", W/2, 230);
+    ctx.fillStyle = "#e9f3ff"; ctx.font = "20px system-ui";
+    ctx.fillText("You're melting. Get to the freezer.", W/2, 272);
+    ctx.fillStyle = "#9fb3d8"; ctx.font = "15px system-ui";
+    ctx.fillText("WASD or Arrow keys to move     R to restart a level", W/2, 340);
+    ctx.fillText("Sun melts you fast. Shade stops the melting. Snowflakes grow you back.", W/2, 368);
+    ctx.fillText("Smaller means faster - and sometimes small is the only way through.", W/2, 394);
+    ctx.fillStyle = "#ffe27a"; ctx.font = "bold 22px system-ui";
+    ctx.fillText("Press Enter to start", W/2, 470);
+    return;
+  }
+
+  drawArena();
+  drawFreezer();
+  drawFlakes();
+  drawDrips();
+  if (player && player.size > 0) drawCube();
+  else if (player){                                  // melted puddle
+    ctx.fillStyle = "rgba(110,185,255,0.8)";
+    ctx.beginPath(); ctx.ellipse(player.x, player.y + 6, 22, 8, 0, 0, Math.PI*2); ctx.fill();
+  }
+  drawTips();
+  drawHUD();
+
+  if (state === STATE.DEAD){
+    overlay([
+      {text:"You melted!", size:52, bold:true, color:"#ff8080", gap:20},
+      {text:"Find shade, grab snowflakes, and don't linger in the sun.", size:17, color:"#c8d8f5", gap:30},
+      {text:"Press Enter or R to retry level " + (levelIndex + 1), size:22, bold:true, color:"#ffe27a"}
+    ]);
+  } else if (state === STATE.LEVELEND){
+    overlay([
+      {text:"LEVEL " + (levelIndex + 1) + " COMPLETE", size:48, bold:true, color:"#9fe6ff", gap:22},
+      {text:"Level time: " + fmtTime(levelTime), size:20, gap:10},
+      {text:"Total so far: " + fmtTime(totalTime), size:20, color:"#c8d8f5", gap:34},
+      {text:"Press Enter for level " + (levelIndex + 2), size:22, bold:true, color:"#ffe27a"}
+    ]);
+  } else if (state === STATE.WIN){
+    overlay([
+      {text:"You made it! Stay frosty.", size:48, bold:true, color:"#9fe6ff", gap:26},
+      {text:"Total time: " + fmtTime(totalTime), size:26, color:"#ffffff", gap:34},
+      {text:"Press Enter to play again", size:22, bold:true, color:"#ffe27a"}
+    ]);
+  }
+}
+
+/* --------------------------------------------------------- 9. MAIN LOOP */
+let last = performance.now();
+function frame(now){
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;            // keep physics sane after a tab stall
+  handleScreenKeys();
+  update(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+loadLevel(0);          // build level 1 up front so the HUD has data
+state = STATE.TITLE;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
