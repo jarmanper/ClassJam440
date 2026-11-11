@@ -321,7 +321,7 @@ function updateDogs(dt){
       setSize(p, p.size - LICK_COST, walls);
       const kx = (p.x - d.x) / (dist || 1), ky = (p.y - d.y) / (dist || 1);
       p.kbx = kx * 260; p.kby = ky * 260;        // shove, decays in update()
-      p.hurtT = 0.4; shakeT = 0.25; callout("\ud83d\udc36 LICKED!  \u2212" + LICK_COST, "#ff9a7a");
+      p.hurtT = 0.4; shakeT = 0.25; callout("LICKED!  \u2212" + LICK_COST, "#ff9a7a");
       d.lickCd = 1.2; d.state = "pause"; d.t = 1.4;
       for (let i = 0; i < 12; i++) spawnDrip(p.x, p.y, false);
     }
@@ -345,7 +345,7 @@ function updateGull(dt){
     if (g.t <= 0){
       if (Math.hypot(p.x - g.tx, p.y - g.ty) < GULL_HIT_R + p.half * 0.5){
         setSize(p, p.size - GULL_COST, level.walls); p.hurtT = 0.4; shakeT = 0.3;
-        callout("\ud83d\udc26 PECKED!  \u2212" + GULL_COST, "#ff9a7a");
+        callout("PECKED!  \u2212" + GULL_COST, "#ff9a7a");
         for (let i = 0; i < 12; i++) spawnDrip(p.x, p.y, false);
       }
       g.phase = "climb"; g.t = 1.2;
@@ -366,8 +366,8 @@ function zoneCallouts(p, rate){
   const zone = p.inShade ? "shade" : rate >= DRAIN_HOT ? "hot" : rate >= DRAIN_SUN ? "sun" : "open";
   if (zone !== lastZone){
     if (zone === "sun")   callout("\u2600 SUN  \u2014  MELTING FAST!", "#ffd34d");
-    if (zone === "hot")   callout("\ud83d\udd25 HOT TILE  \u2014  GET OFF!", "#ff6a4a");
-    if (zone === "shade") callout("\u26f1 SHADE  \u2014  safe, melting stopped", "#8fd0ff");
+    if (zone === "hot")   callout("\u2668 HOT TILE  \u2014  GET OFF!", "#ff6a4a");
+    if (zone === "shade") callout("\u263d SHADE  \u2014  safe, melting stopped", "#8fd0ff");
     lastZone = zone;
   }
 }
@@ -809,11 +809,11 @@ function renderScreen(){
       'Smaller is faster, and some slots only fit a small cube - so sometimes you melt <i>on purpose</i>.</p>' +
       '<div class="legend">' +
       '<span class="sw" style="background:#ffd966"></span><span>\u2600 <b>Sun</b> - melts you fast (look for the sun orb)</span>' +
-      '<span class="sw" style="background:#ff4a3a"></span><span>\ud83d\udd25 <b>Hot tile</b> - melts you even faster</span>' +
-      '<span class="sw" style="background:#0b1a38;border:1px solid #39507e"></span><span>\u26f1 <b>Shade</b> - melting stops. Dogs won\'t go in.</span>' +
+      '<span class="sw" style="background:#ff4a3a"></span><span>\u2668 <b>Hot tile</b> - melts you even faster</span>' +
+      '<span class="sw" style="background:#0b1a38;border:1px solid #39507e"></span><span>\u263d <b>Shade</b> - melting stops. Dogs won\'t go in.</span>' +
       '<span class="sw" style="background:#fff"></span><span>\u2744 <b>Snowflake</b> - grow back +' + FLAKE_GAIN + '</span>' +
-      '<span class="sw" style="background:#b8773a"></span><span>\ud83d\udc36 <b>Dog</b> - licks you (\u2212' + LICK_COST + '). Small cubes outrun it.</span>' +
-      '<span class="sw" style="background:#f4f6fa"></span><span>\ud83d\udc26 <b>Seagull</b> - marks you with a shadow, then dives (\u2212' + GULL_COST + ')</span>' +
+      '<span class="sw" style="background:#b8773a"></span><span><b>Dog</b> - licks you (\u2212' + LICK_COST + '). Small cubes outrun it.</span>' +
+      '<span class="sw" style="background:#f4f6fa"></span><span><b>Seagull</b> - marks you with a shadow, then dives (\u2212' + GULL_COST + ')</span>' +
       '<span class="sw" style="background:#cfe9ff;box-shadow:0 0 8px #7fdfff"></span><span>\u2744 <b>Freezer</b> - the goal</span>' +
       '</div><div class="menu"><button class="btn" onclick="menu(\'back\')">\u2190 &nbsp;Back <span class="val">Esc / Enter</span></button></div></div>';
   } else if (state === STATE.DEAD){
